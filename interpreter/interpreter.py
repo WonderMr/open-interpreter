@@ -19,11 +19,37 @@ os.environ["LITELLM_LOCAL_MODEL_COST_MAP"] = "True"
 import webbrowser
 from urllib.parse import quote
 
-import litellm
 
-litellm.suppress_debug_info = True
-litellm.REPEATED_STREAMING_CHUNK_LIMIT = 99999999
-litellm.modify_params = True
+def _get_litellm():
+    """Lazily import and configure litellm to avoid hard crashes at startup.
+
+    This defers importing litellm (and its transitive dependencies like openai)
+    until it's actually needed. If the import fails due to incompatible versions,
+    we raise a concise, actionable error message.
+    """
+    global _litellm_cached
+    try:
+        return _litellm_cached
+    except NameError:
+        pass
+
+    try:
+        import litellm as _litellm
+    except Exception as import_error:
+        raise ImportError(
+            "Failed to import 'litellm'. This is usually caused by an incompatible 'openai' package version. "
+            "Please reinstall with compatible dependencies (e.g., pip install -U 'openai>=1.58,<2' 'litellm>=1.52,<2') "
+            "or install from the provided Git branch."
+        ) from import_error
+
+        # Unreachable but keeps linters happy
+        # return None  # type: ignore
+
+    _litellm.suppress_debug_info = True
+    _litellm.REPEATED_STREAMING_CHUNK_LIMIT = 99999999
+    _litellm.modify_params = True
+    _litellm_cached = _litellm
+    return _litellm
 # litellm.drop_params = True
 
 from anthropic import Anthropic
@@ -259,6 +285,7 @@ class Interpreter:
         # Only try to get model info if we need either provider or max_tokens
         if provider is None or max_tokens is None:
             try:
+                litellm = _get_litellm()
                 model_info = litellm.get_model_info(self.model)
                 if provider is None:
                     provider = model_info["litellm_provider"]
@@ -737,6 +764,7 @@ Notes for using the `str_replace` command:
                             print(str(m))
                     print()
 
+                litellm = _get_litellm()
                 raw_response = litellm.completion(**params)
 
                 if not stream:

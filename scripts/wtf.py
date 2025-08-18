@@ -79,7 +79,20 @@ from pynput.keyboard import Controller, Key
 
 # Don't let litellm go online here, this slows it down
 os.environ["LITELLM_LOCAL_MODEL_COST_MAP"] = "True"
-import litellm
+def _get_litellm():
+    try:
+        return _litellm_cached
+    except NameError:
+        pass
+    try:
+        import litellm as _litellm
+    except Exception as import_error:
+        raise ImportError(
+            "Failed to import 'litellm' for the wtf tool. This is usually caused by an incompatible 'openai' package version. "
+            "Please reinstall with compatible dependencies (e.g., pip install -U 'openai>=1.58,<2' 'litellm>=1.52,<2')."
+        ) from import_error
+    _litellm_cached = _litellm
+    return _litellm
 
 # Define system messages
 SYSTEM_MESSAGE = f"""
@@ -475,6 +488,7 @@ def main():
     language_buffer = ""
     started = False
 
+    litellm = _get_litellm()
     for chunk in litellm.completion(
         model=model, messages=messages, temperature=0, stream=True
     ):
