@@ -12,8 +12,8 @@ class CodeBlock(BaseBlock):
     Code Blocks display code and outputs in different languages. You can also set the active_line!
     """
 
-    def __init__(self, interpreter=None):
-        super().__init__()
+    def __init__(self, interpreter=None, use_live: bool = True):
+        super().__init__(use_live=use_live)
 
         self.type = "code"
         self.highlight_active_line = (
@@ -32,9 +32,9 @@ class CodeBlock(BaseBlock):
         self.refresh(cursor=False)
         super().end()
 
-    def refresh(self, cursor=True):
+    def as_renderable(self, cursor: bool = True):
         if not self.code and not self.output:
-            return
+            return ""
 
         # Get code
         code = self.code
@@ -91,8 +91,10 @@ class CodeBlock(BaseBlock):
         if self.margin_top:
             # This adds some space at the top. Just looks good!
             group_items = [""] + group_items
-        group = Group(*group_items)
+        return Group(*group_items)
 
-        # Update the live display
-        self.live.update(group)
-        self.live.refresh()
+    def refresh(self, cursor=True):
+        renderable = self.as_renderable(cursor)
+        if self.live:
+            self.live.update(renderable)
+            self.live.refresh()

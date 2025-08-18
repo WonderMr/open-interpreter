@@ -8,24 +8,25 @@ from .base_block import BaseBlock
 
 
 class MessageBlock(BaseBlock):
-    def __init__(self):
-        super().__init__()
+    def __init__(self, use_live: bool = True):
+        super().__init__(use_live=use_live)
 
         self.type = "message"
         self.message = ""
 
-    def refresh(self, cursor=True):
-        # De-stylize any code blocks in markdown,
-        # to differentiate from our Code Blocks
+    def as_renderable(self, cursor: bool = True):
         content = textify_markdown_code_blocks(self.message)
-
         if cursor:
             content += "●"
-
         markdown = Markdown(content.strip())
         panel = Panel(markdown, box=MINIMAL)
-        self.live.update(panel)
-        self.live.refresh()
+        return panel
+
+    def refresh(self, cursor=True):
+        renderable = self.as_renderable(cursor)
+        if self.live:
+            self.live.update(renderable)
+            self.live.refresh()
 
 
 def textify_markdown_code_blocks(text):

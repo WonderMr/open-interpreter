@@ -29,6 +29,13 @@ from .utils.cli_input import cli_input
 from .utils.display_output import display_output
 from .utils.find_image_path import find_image_path
 
+# Rich UI for split console
+from rich.console import Console, Group
+from rich.live import Live
+from rich.layout import Layout
+from rich.text import Text
+from rich.panel import Panel
+
 # Add examples to the readline history
 examples = [
     "How many files are on my desktop?",
@@ -82,6 +89,41 @@ def terminal_interface(interpreter, message):
     active_block = None
     voice_subprocess = None
 
+    # Single Live with split layout: top output, bottom status (only in rich display mode)
+    live = None
+    layout = None
+    status_text = None
+    rendered_blocks = []
+    if not interpreter.plain_text_display:
+        console = Console()
+        layout = Layout()
+        layout.split(
+            Layout(name="output", ratio=10),
+            Layout(name="status", size=1),
+        )
+        status_text = Text("", style="bold white on dark_green")
+        layout["status"].update(Panel(status_text, style="on #003300"))
+        live = Live(layout, console=console, auto_refresh=False, refresh_per_second=30)
+        live.start()
+
+        def update_output(cursor: bool = True):
+            if layout is None:
+                return
+            renderables = list(rendered_blocks)
+            if active_block:
+                renderables.append(active_block.as_renderable(cursor=cursor))
+            layout["output"].update(Group(*renderables))
+            live.refresh()  # type: ignore[union-attr]
+
+        def commit_active_block():
+            nonlocal active_block
+            if active_block:
+                rendered = active_block.as_renderable(cursor=False)
+                rendered_blocks.append(rendered)
+                active_block = None
+                layout["output"].update(Group(*rendered_blocks))
+                live.refresh()  # type: ignore[union-attr]
+
     while True:
         if interactive:
             if (
@@ -95,11 +137,19 @@ def terminal_interface(interpreter, message):
             else:
                 ### This is the primary input for Open Interpreter.
                 try:
+                    if not interpreter.plain_text_display and live:
+                        # Temporarily hide status message
+                        status_text.plain = ""
+                        layout["status"].update(Panel(Text("> "), style="on #003300"))
+                        live.refresh()
                     message = (
                         cli_input("> ").strip()
                         if interpreter.multi_line
                         else input("> ").strip()
                     )
+                    if not interpreter.plain_text_display and live:
+                        layout["status"].update(Panel(Text(""), style="on #003300"))
+                        live.refresh()
                 except (KeyboardInterrupt, EOFError):
                     # Treat Ctrl-D on an empty line the same as Ctrl-C by exiting gracefully
                     interpreter.display_message("\n\n`Exiting...`")
@@ -169,15 +219,19 @@ def terminal_interface(interpreter, message):
             i = 0
             while not spinner_stop_event.is_set():
                 try:
-                    sys.stdout.write("\r" + label + frames[i % len(frames)])
-                    sys.stdout.flush()
+                    if status_text is not None:
+                        status_text.plain = label + frames[i % len(frames)]
+                        layout["status"].update(Panel(status_text, style="on #003300"))
+                        live.refresh()  # type: ignore[union-attr]
                 except Exception:
                     pass
                 time.sleep(0.1)
                 i += 1
             try:
-                sys.stdout.write("\r" + " " * (len(label) + 2) + "\r")
-                sys.stdout.flush()
+                if status_text is not None:
+                    status_text.plain = ""
+                    layout["status"].update(Panel(status_text, style="on #003300"))
+                    live.refresh()  # type: ignore[union-attr]
             except Exception:
                 pass
 
@@ -196,15 +250,19 @@ def terminal_interface(interpreter, message):
             i = 0
             while exec_spinner_stop_event and not exec_spinner_stop_event.is_set():
                 try:
-                    sys.stdout.write("\r" + label + frames[i % len(frames)])
-                    sys.stdout.flush()
+                    if status_text is not None:
+                        status_text.plain = label + frames[i % len(frames)]
+                        layout["status"].update(Panel(status_text, style="on #330000"))
+                        live.refresh()  # type: ignore[union-attr]
                 except Exception:
                     pass
                 time.sleep(0.1)
                 i += 1
             try:
-                sys.stdout.write("\r" + " " * (len(label) + 2) + "\r")
-                sys.stdout.flush()
+                if status_text is not None:
+                    status_text.plain = ""
+                    layout["status"].update(Panel(status_text, style="on #003300"))
+                    live.refresh()  # type: ignore[union-attr]
             except Exception:
                 pass
 
@@ -219,15 +277,19 @@ def terminal_interface(interpreter, message):
             i = 0
             while proc_spinner_stop_event and not proc_spinner_stop_event.is_set():
                 try:
-                    sys.stdout.write("\r" + label + frames[i % len(frames)])
-                    sys.stdout.flush()
+                    if status_text is not None:
+                        status_text.plain = label + frames[i % len(frames)]
+                        layout["status"].update(Panel(status_text, style="on #001133"))
+                        live.refresh()  # type: ignore[union-attr]
                 except Exception:
                     pass
                 time.sleep(0.1)
                 i += 1
             try:
-                sys.stdout.write("\r" + " " * (len(label) + 2) + "\r")
-                sys.stdout.flush()
+                if status_text is not None:
+                    status_text.plain = ""
+                    layout["status"].update(Panel(status_text, style="on #003300"))
+                    live.refresh()  # type: ignore[union-attr]
             except Exception:
                 pass
 
@@ -261,7 +323,12 @@ def terminal_interface(interpreter, message):
 
                 if chunk["type"] == "review" and chunk.get("content"):
                     # Specialized models can emit a code review.
-                    print(chunk.get("content"), end="", flush=True)
+                    if interpreter.plain_text_display:
+                        print(chunk.get("content"), end="", flush=True)
+                    else:
+                        if status_text is not None:
+                            layout["status"].update(Panel(Text(chunk.get("content")), style="on #222244"))
+                            live.refresh()  # type: ignore[union-attr]
 
                 # Execution notice
                 if chunk["type"] == "confirmation":
@@ -308,7 +375,7 @@ def terminal_interface(interpreter, message):
                         if response.strip().lower() == "y":
                             # Create a new, identical block where the code will actually be run
                             # Conveniently, the chunk includes everything we need to do this:
-                            active_block = CodeBlock(interpreter)
+                            active_block = CodeBlock(interpreter, use_live=interpreter.plain_text_display)
                             active_block.margin_top = False  # <- Aesthetic choice
                             active_block.language = language
                             active_block.code = code
@@ -340,7 +407,7 @@ def terminal_interface(interpreter, message):
 
                             # Delete the temporary file
                             os.unlink(tf.name)
-                            active_block = CodeBlock(interpreter)
+                            active_block = CodeBlock(interpreter, use_live=interpreter.plain_text_display)
                             active_block.margin_top = False  # <- Aesthetic choice
                             active_block.language = language
                             active_block.code = code
@@ -375,30 +442,37 @@ def terminal_interface(interpreter, message):
                     continue
 
                 if "end" in chunk and active_block:
-                    active_block.refresh(cursor=False)
+                    ended_block = False
+                    if not interpreter.plain_text_display:
+                        if chunk["type"] in ["message", "console"]:
+                            if 'commit_active_block' in locals():
+                                commit_active_block()
+                            ended_block = True
+                        else:
+                            # code end: keep block open, just refresh without cursor
+                            update_output(cursor=False)
+                    else:
+                        active_block.refresh(cursor=False)
+                        if chunk["type"] in ["message", "console"]:
+                            active_block.end()
+                            active_block = None
+                            ended_block = True
 
-                    if chunk["type"] in [
-                        "message",
-                        "console",
-                    ]:  # We don't stop on code's end — code + console output are actually one block.
-                        active_block.end()
-                        active_block = None
+                    # Stop execution spinner on block end
+                    if ended_block and exec_spinner_running and exec_spinner_stop_event:
+                        exec_spinner_stop_event.set()
+                        try:
+                            exec_spinner_thread.join(timeout=0.2)  # type: ignore[arg-type]
+                        except Exception:
+                            pass
+                        exec_spinner_running = False
 
-                        # Stop execution spinner on block end
-                        if exec_spinner_running and exec_spinner_stop_event:
-                            exec_spinner_stop_event.set()
-                            try:
-                                exec_spinner_thread.join(timeout=0.2)  # type: ignore[arg-type]
-                            except Exception:
-                                pass
-                            exec_spinner_running = False
-
-                        # Start processing spinner while AI formats the answer
-                        if not interpreter.plain_text_display and not proc_spinner_running:
-                            proc_spinner_stop_event = threading.Event()
-                            proc_spinner_thread = threading.Thread(target=_proc_spinner, daemon=True)
-                            proc_spinner_thread.start()
-                            proc_spinner_running = True
+                    # Start processing spinner while AI formats the answer
+                    if ended_block and not interpreter.plain_text_display and not proc_spinner_running:
+                        proc_spinner_stop_event = threading.Event()
+                        proc_spinner_thread = threading.Thread(target=_proc_spinner, daemon=True)
+                        proc_spinner_thread.start()
+                        proc_spinner_running = True
 
                 # Assistant message blocks
                 if chunk["type"] == "message":
@@ -411,7 +485,7 @@ def terminal_interface(interpreter, message):
                             except Exception:
                                 pass
                             proc_spinner_running = False
-                        active_block = MessageBlock()
+                        active_block = MessageBlock(use_live=interpreter.plain_text_display)
                         render_cursor = True
 
                     if "content" in chunk:
@@ -470,7 +544,7 @@ def terminal_interface(interpreter, message):
                             except Exception:
                                 pass
                             proc_spinner_running = False
-                        active_block = CodeBlock(interpreter)
+                        active_block = CodeBlock(interpreter, use_live=interpreter.plain_text_display)
                         active_block.language = chunk["format"]
                         render_cursor = True
 
@@ -657,16 +731,24 @@ def terminal_interface(interpreter, message):
                         # We need to make a code block if we pushed out an HTML block first, which would have closed our code block.
                         if not isinstance(active_block, CodeBlock):
                             if active_block:
-                                active_block.end()
-                            active_block = CodeBlock(interpreter)
+                                if interpreter.plain_text_display:
+                                    active_block.end()
+                            active_block = CodeBlock(interpreter, use_live=interpreter.plain_text_display)
 
                 if active_block:
-                    active_block.refresh(cursor=render_cursor)
+                    if not interpreter.plain_text_display:
+                        update_output(cursor=render_cursor)
+                    else:
+                        active_block.refresh(cursor=render_cursor)
 
             # (Sometimes -- like if they CTRL-C quickly -- active_block is still None here)
             if "active_block" in locals():
                 if active_block:
-                    active_block.end()
+                    if not interpreter.plain_text_display:
+                        if 'commit_active_block' in locals():
+                            commit_active_block()
+                    else:
+                        active_block.end()
                     active_block = None
                     time.sleep(0.1)
 
@@ -678,7 +760,7 @@ def terminal_interface(interpreter, message):
             # Exit gracefully
             if "active_block" in locals() and active_block:
                 active_block.end()
-                active_block = None
+            active_block = None
 
             if interactive:
                 # (this cancels LLM, returns to the interactive "> " input)
@@ -723,5 +805,10 @@ def terminal_interface(interpreter, message):
                 proc_spinner_stop_event.set()
                 try:
                     proc_spinner_thread.join(timeout=0.2)  # type: ignore[arg-type]
+                except Exception:
+                    pass
+            if live:
+                try:
+                    live.stop()
                 except Exception:
                     pass
