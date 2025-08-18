@@ -13,7 +13,7 @@ readme = "README.md"
 
 # Required dependencies
 python = ">=3.9,<4"
-litellm = "^1.52.3"
+litellm = ">=1.56,<2"
 openai = ">=1.63,<2"
 typing-extensions = ">=4.7"
 anthropic = "^0.39.0"

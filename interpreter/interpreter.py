@@ -38,7 +38,7 @@ def _get_litellm():
     except Exception as import_error:
         raise ImportError(
             "Failed to import 'litellm'. This is usually caused by an incompatible 'openai' package version. "
-            "Please reinstall with compatible dependencies (e.g., pip install -U 'openai>=1.58,<2' 'litellm>=1.52,<2') "
+            "Please reinstall with compatible dependencies (e.g., pip install -U 'openai>=1.63,<2' 'litellm>=1.56,<2') "
             "or install from the provided Git branch."
         ) from import_error
 
