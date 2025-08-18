@@ -846,16 +846,19 @@ Notes for using the `str_replace` command:
                                     self.tool_calls = None
 
                             class _Choice:
-                                def __init__(self, delta):
+                                def __init__(self, delta, finish_reason=None):
                                     self.delta = delta
+                                    self.finish_reason = finish_reason
 
                             class _Chunk:
-                                def __init__(self, content):
-                                    self.choices = [_Choice(_Delta(content))]
+                                def __init__(self, choice):
+                                    self.choices = [choice]
 
                             def _stream_map():
-                                for chunk in response:
-                                    yield _Chunk(getattr(chunk.choices[0].delta, "content", None))
+                                for c in response:
+                                    content = getattr(c.choices[0].delta, "content", None)
+                                    finish_reason = getattr(c.choices[0], "finish_reason", None)
+                                    yield _Chunk(_Choice(_Delta(content), finish_reason))
 
                             raw_response = _stream_map()
                         else:
@@ -886,6 +889,7 @@ Notes for using the `str_replace` command:
                             class _ChoiceObj:
                                 def __init__(self, message):
                                     self.delta = _DeltaObj(message)
+                                    self.finish_reason = getattr(message, "finish_reason", None)
 
                             class _RespObj:
                                 def __init__(self, message):
