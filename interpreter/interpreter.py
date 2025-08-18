@@ -814,9 +814,14 @@ Notes for using the `str_replace` command:
                             tool_defs = []
                             for t in tools_param:
                                 if t.get("type") == "function":
+                                    # Ensure arguments is JSON-serializable string
+                                    func = dict(t["function"])
+                                    if "arguments" in func and isinstance(func["arguments"], dict):
+                                        import json as _json
+                                        func["arguments"] = _json.dumps(func["arguments"])  # type: ignore
                                     tool_defs.append({
                                         "type": "function",
-                                        "function": t["function"],
+                                        "function": func,
                                     })
 
                         if stream:
@@ -1035,7 +1040,26 @@ Notes for using the `str_replace` command:
                         edit = ToolRenderer()
 
                 if self.tool_calling:
-                    self.messages.append(message)
+                    assistant_message = {
+                        "role": "assistant",
+                        "content": getattr(message, "content", "") or "",
+                    }
+                    tool_calls = getattr(message, "tool_calls", None)
+                    if tool_calls:
+                        mapped_calls = []
+                        for tc in tool_calls:
+                            mapped_calls.append(
+                                {
+                                    "id": getattr(tc, "id", None),
+                                    "type": "function",
+                                    "function": {
+                                        "name": getattr(getattr(tc, "function", None), "name", None),
+                                        "arguments": getattr(getattr(tc, "function", None), "arguments", "") or "",
+                                    },
+                                }
+                            )
+                        assistant_message["tool_calls"] = mapped_calls
+                    self.messages.append(assistant_message)
 
                 print()
 
