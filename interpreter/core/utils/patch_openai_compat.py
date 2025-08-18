@@ -41,11 +41,26 @@ def patch_openai_response_text_config() -> None:
 
         # If attribute missing, add a simple stub
         if not hasattr(resp_module, "ResponseTextConfig"):
-            class ResponseTextConfig:  # type: ignore
+            class _PydanticAnyMixin:
+                @classmethod
+                def __get_pydantic_core_schema__(cls, source_type, handler):  # type: ignore
+                    try:
+                        from pydantic_core import core_schema
+
+                        return core_schema.any_schema()
+                    except Exception:
+                        return None
+
+                @classmethod
+                def __get_pydantic_json_schema__(cls, core_schema, handler):  # type: ignore
+                    return {"type": "object"}
+
+            class ResponseTextConfig(_PydanticAnyMixin):  # type: ignore
                 """Compatibility stub for older openai versions."""
 
                 def __init__(self, *args: Any, **kwargs: Any) -> None:  # noqa: D401
-                    pass
+                    for k, v in kwargs.items():
+                        setattr(self, k, v)
 
             setattr(resp_module, "ResponseTextConfig", ResponseTextConfig)
             # Ensure subsequent from-imports see the attribute
@@ -69,7 +84,21 @@ def patch_openai() -> None:
         if resp_params_module is not None and not hasattr(
             resp_params_module, "ResponseTextConfigParam"
         ):
-            class ResponseTextConfigParam:  # type: ignore
+            class _PydanticAnyMixin:
+                @classmethod
+                def __get_pydantic_core_schema__(cls, source_type, handler):  # type: ignore
+                    try:
+                        from pydantic_core import core_schema
+
+                        return core_schema.any_schema()
+                    except Exception:
+                        return None
+
+                @classmethod
+                def __get_pydantic_json_schema__(cls, core_schema, handler):  # type: ignore
+                    return {"type": "object"}
+
+            class ResponseTextConfigParam(_PydanticAnyMixin):  # type: ignore
                 """Compatibility stub for older openai versions."""
 
                 def __init__(self, *args: Any, **kwargs: Any) -> None:  # noqa: D401
