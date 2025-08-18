@@ -18,7 +18,7 @@ interpreter.chat()
 
 </CodeGroup>
 
-This will default to `gpt-4-turbo`, which is the most capable publicly available model for code interpretation (Open Interpreter was designed to be used with `gpt-4`).
+This will default to `gpt-4o`, which is the most capable publicly available model for code interpretation (Open Interpreter was designed to be used with `gpt-4`).
 
 To run a specific model from OpenAI, set the `model` flag:
 
@@ -41,6 +41,14 @@ interpreter.chat()
 
 We support any model on [OpenAI's models page:](https://platform.openai.com/docs/models/)
 
+## Current Recommended Models
+
+- **gpt-4o**: Most capable model for complex tasks
+- **gpt-4o-mini**: Fast and cost-effective for simpler tasks  
+- **gpt-4-turbo**: Previous generation, still very capable
+- **o1-preview**: Reasoning model for complex problem-solving
+- **o1-mini**: Smaller reasoning model
+
 <CodeGroup>
 
 ```bash Terminal
@@ -52,6 +60,16 @@ interpreter.llm.model = "gpt-4o"
 ```
 
 </CodeGroup>
+
+## Automatic Parameter Handling
+
+Open Interpreter automatically handles the differences between OpenAI models:
+
+- **o1 models** (o1-preview, o1-mini) automatically use `max_completion_tokens` parameter
+- **Other models** use `max_tokens` with automatic fallback if needed
+- **Future models** like GPT-5 (when available) will be automatically supported
+
+If you encounter errors related to `max_tokens` vs `max_completion_tokens`, Open Interpreter will automatically retry with the correct parameter.
 
 # Required Environment Variables
 

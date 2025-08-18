@@ -298,8 +298,12 @@ Continuing...
             model_lower = self.model.lower() if self.model else ""
             
             # Check if this is a known OpenAI model that requires max_completion_tokens
+            # Based on OpenAI API documentation, o1 models definitely require max_completion_tokens
+            # Adding potential future models like GPT-5 based on the pattern
+            # Other models will be handled by the fallback logic in fixed_litellm_completions
             openai_models_requiring_max_completion_tokens = [
-                "o1-preview", "o1-mini", "o1", "o3"
+                "o1-preview", "o1-mini", "o1", "o3",
+                "gpt-5", "gpt-5-mini", "gpt-5-nano"  # Future-proofing for potential GPT-5 models
             ]
             
             uses_max_completion_tokens = False
@@ -472,14 +476,17 @@ def fixed_litellm_completions(**params):
                 first_error = e
             
             # Handle the max_tokens vs max_completion_tokens error
-            if (hasattr(e, 'message') and "max_tokens" in str(e) and "max_completion_tokens" in str(e)) or \
-               ("max_tokens" in str(e) and "max_completion_tokens" in str(e)):
+            error_str = str(e).lower()
+            if ("max_tokens" in error_str and "max_completion_tokens" in error_str) or \
+               ("unsupported parameter" in error_str and "max_tokens" in error_str):
                 if "max_tokens" in params and "max_completion_tokens" not in params:
                     # Switch from max_tokens to max_completion_tokens
+                    print(f"Switching to max_completion_tokens for model {params.get('model', 'unknown')}")
                     params["max_completion_tokens"] = params.pop("max_tokens")
                     continue  # Retry immediately with the corrected parameter
                 elif "max_completion_tokens" in params and "max_tokens" not in params:
                     # Switch from max_completion_tokens to max_tokens
+                    print(f"Switching to max_tokens for model {params.get('model', 'unknown')}")
                     params["max_tokens"] = params.pop("max_completion_tokens")
                     continue  # Retry immediately with the corrected parameter
             
