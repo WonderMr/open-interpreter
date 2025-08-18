@@ -3,7 +3,11 @@ import os
 os.environ["LITELLM_LOCAL_MODEL_COST_MAP"] = "True"
 import sys
 
-import litellm
+from ..utils.patch_openai_compat import patch_openai
+
+patch_openai()
+
+import litellm  # noqa: E402
 
 litellm.suppress_debug_info = True
 litellm.REPEATED_STREAMING_CHUNK_LIMIT = 99999999

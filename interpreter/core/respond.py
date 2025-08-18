@@ -5,7 +5,11 @@ import time
 import traceback
 
 os.environ["LITELLM_LOCAL_MODEL_COST_MAP"] = "True"
-import litellm
+from .utils.patch_openai_compat import patch_openai
+
+patch_openai()
+
+import litellm  # noqa: E402
 import openai
 
 from .render_message import render_message
