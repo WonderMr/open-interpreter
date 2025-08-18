@@ -182,6 +182,8 @@ class Interpreter:
         self._spinner = SimpleSpinner("")
         self._command_handler = CommandHandler(self)
         self._stop_flag = False  # Add stop flag
+        # Track consecutive assistant turns that contain only tool calls and no content
+        self._consecutive_tool_only_responses = 0
 
     def to_dict(self):
         """Convert current settings to dictionary"""
@@ -891,6 +893,10 @@ Notes for using the `str_replace` command:
                     messages = params["messages"]
                     temperature = params.get("temperature", 0)
                     tools_param = params.get("tools")
+                    # If we've seen multiple consecutive tool-only replies, force a textual reply
+                    tool_choice_arg = (
+                        "none" if (self.tool_calling and self._consecutive_tool_only_responses >= 2) else None
+                    )
 
                     # Prepare tool definitions for OpenAI (function calling)
                     tool_defs = None
@@ -911,21 +917,27 @@ Notes for using the `str_replace` command:
                     if stream:
                         # Some models support only default temperature. Retry without it on 400.
                         try:
-                            response = client.chat.completions.create(
-                                model=model,
-                                messages=messages,
-                                temperature=temperature,
-                                tools=tool_defs,
-                                stream=True,
-                            )
+                            kwargs = {
+                                "model": model,
+                                "messages": messages,
+                                "temperature": temperature,
+                                "tools": tool_defs,
+                                "stream": True,
+                            }
+                            if tool_choice_arg is not None:
+                                kwargs["tool_choice"] = tool_choice_arg
+                            response = client.chat.completions.create(**kwargs)
                         except Exception as e:
                             if "Unsupported value" in str(e) and "temperature" in str(e):
-                                response = client.chat.completions.create(
-                                    model=model,
-                                    messages=messages,
-                                    tools=tool_defs,
-                                    stream=True,
-                                )
+                                kwargs = {
+                                    "model": model,
+                                    "messages": messages,
+                                    "tools": tool_defs,
+                                    "stream": True,
+                                }
+                                if tool_choice_arg is not None:
+                                    kwargs["tool_choice"] = tool_choice_arg
+                                response = client.chat.completions.create(**kwargs)
                             else:
                                 raise
                         # Adapt to litellm-like streaming interface for the main loop below
@@ -978,21 +990,27 @@ Notes for using the `str_replace` command:
                         raw_response = _stream_map()
                     else:
                         try:
-                            response = client.chat.completions.create(
-                                model=model,
-                                messages=messages,
-                                temperature=temperature,
-                                tools=tool_defs,
-                                stream=False,
-                            )
+                            kwargs = {
+                                "model": model,
+                                "messages": messages,
+                                "temperature": temperature,
+                                "tools": tool_defs,
+                                "stream": False,
+                            }
+                            if tool_choice_arg is not None:
+                                kwargs["tool_choice"] = tool_choice_arg
+                            response = client.chat.completions.create(**kwargs)
                         except Exception as e:
                             if "Unsupported value" in str(e) and "temperature" in str(e):
-                                response = client.chat.completions.create(
-                                    model=model,
-                                    messages=messages,
-                                    tools=tool_defs,
-                                    stream=False,
-                                )
+                                kwargs = {
+                                    "model": model,
+                                    "messages": messages,
+                                    "tools": tool_defs,
+                                    "stream": False,
+                                }
+                                if tool_choice_arg is not None:
+                                    kwargs["tool_choice"] = tool_choice_arg
+                                response = client.chat.completions.create(**kwargs)
                             else:
                                 raise
                         # Normalize to iterable of one with .choices[0].delta
@@ -1037,6 +1055,8 @@ Notes for using the `str_replace` command:
                             "content": raw_response[0].choices[0].delta.content,
                         }
                     )
+                    # Reset tool-only counter because we have textual content in this mode
+                    self._consecutive_tool_only_responses = 0
 
                     # Extract code blocks from non-tool-calling response
                     content = raw_response[0].choices[0].delta.content
@@ -1171,6 +1191,14 @@ Notes for using the `str_replace` command:
                                 }
                             )
                         assistant_message["tool_calls"] = mapped_calls
+                        # Update tool-only response counter
+                        if (assistant_message.get("content") == "" or assistant_message.get("content") is None):
+                            self._consecutive_tool_only_responses += 1
+                        else:
+                            self._consecutive_tool_only_responses = 0
+                    else:
+                        # No tool calls; reset the counter
+                        self._consecutive_tool_only_responses = 0
                     self.messages.append(assistant_message)
 
                 print()
