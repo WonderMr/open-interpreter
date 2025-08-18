@@ -827,7 +827,7 @@ def terminal_interface(interpreter, message):
                     proc_spinner_thread.join(timeout=0.2)  # type: ignore[arg-type]
                 except Exception:
                     pass
-            if live:
+            if live and not interactive:
                 try:
                     live.stop()
                 except Exception:
