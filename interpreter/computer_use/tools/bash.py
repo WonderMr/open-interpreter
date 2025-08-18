@@ -64,10 +64,28 @@ class _BashSession:
         assert self._process.stdout
         assert self._process.stderr
 
-        # send command to the process
-        self._process.stdin.write(
-            (command + f"; echo '{self._sentinel}'\n").encode()
+        # To avoid contaminating STDIN for programs like `python -`, write the
+        # command to a temporary script and source it in the current shell.
+        # This preserves shell state (e.g., `cd`) across runs and prevents
+        # subsequent bytes from being read by child processes.
+        import tempfile
+        import pathlib
+
+        tmp_file = tempfile.NamedTemporaryFile(
+            mode="w", delete=False, prefix="oi_bash_", suffix=".sh"
         )
+        try:
+            tmp_file.write(command)
+            tmp_file.flush()
+            tmp_path = pathlib.Path(tmp_file.name)
+        finally:
+            tmp_file.close()
+
+        # Use POSIX-compliant dot (.) to source the file so that state persists
+        # within the session. Then print a sentinel so we know execution ended.
+        wrapper_line = f". {str(tmp_path)}; echo '{self._sentinel}'\n"
+
+        self._process.stdin.write(wrapper_line.encode())
         await self._process.stdin.drain()
 
         # read output from the process, until the sentinel is found
@@ -98,6 +116,12 @@ class _BashSession:
         except Exception:
             # If we cannot access internal buffer, fall back to no-op
             error = None
+
+        # Attempt to remove the temporary file; ignore failures
+        try:
+            tmp_path.unlink(missing_ok=True)  # type: ignore[attr-defined]
+        except Exception:
+            pass
 
         return CLIResult(output=output, error=error)
 
