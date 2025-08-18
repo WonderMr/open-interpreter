@@ -794,144 +794,141 @@ Notes for using the `str_replace` command:
                             print(str(m))
                     print()
 
-                try:
-                    litellm = _get_litellm()
-                    raw_response = litellm.completion(**params)
-                except ImportError:
-                    # Fallback: call OpenAI Chat Completions API directly for OpenAI models
-                    if provider == "openai":
-                        stream = params.get("stream", True)
-                        client = _openai_client(self.api_key, api_base)
-                        # Extract OpenAI-friendly payload
-                        model = params["model"]
-                        messages = params["messages"]
-                        temperature = params.get("temperature", 0)
-                        tools_param = params.get("tools")
+                if provider == "openai":
+                    stream = params.get("stream", True)
+                    client = _openai_client(self.api_key, api_base)
+                    # Extract OpenAI-friendly payload
+                    model = params["model"]
+                    messages = params["messages"]
+                    temperature = params.get("temperature", 0)
+                    tools_param = params.get("tools")
 
-                        # Prepare tool definitions for OpenAI (function calling)
-                        tool_defs = None
-                        if tools_param:
-                            tool_defs = []
-                            for t in tools_param:
-                                if t.get("type") == "function":
-                                    # Ensure arguments is JSON-serializable string
-                                    func = dict(t["function"])
-                                    if "arguments" in func and isinstance(func["arguments"], dict):
-                                        import json as _json
-                                        func["arguments"] = _json.dumps(func["arguments"])  # type: ignore
-                                    tool_defs.append({
-                                        "type": "function",
-                                        "function": func,
-                                    })
+                    # Prepare tool definitions for OpenAI (function calling)
+                    tool_defs = None
+                    if tools_param:
+                        tool_defs = []
+                        for t in tools_param:
+                            if t.get("type") == "function":
+                                # Ensure arguments is JSON-serializable string
+                                func = dict(t["function"])
+                                if "arguments" in func and isinstance(func["arguments"], dict):
+                                    import json as _json
+                                    func["arguments"] = _json.dumps(func["arguments"])  # type: ignore
+                                tool_defs.append({
+                                    "type": "function",
+                                    "function": func,
+                                })
 
-                        if stream:
-                            # Some models support only default temperature. Retry without it on 400.
-                            try:
+                    if stream:
+                        # Some models support only default temperature. Retry without it on 400.
+                        try:
+                            response = client.chat.completions.create(
+                                model=model,
+                                messages=messages,
+                                temperature=temperature,
+                                tools=tool_defs,
+                                stream=True,
+                            )
+                        except Exception as e:
+                            if "Unsupported value" in str(e) and "temperature" in str(e):
                                 response = client.chat.completions.create(
                                     model=model,
                                     messages=messages,
-                                    temperature=temperature,
                                     tools=tool_defs,
                                     stream=True,
                                 )
-                            except Exception as e:
-                                if "Unsupported value" in str(e) and "temperature" in str(e):
-                                    response = client.chat.completions.create(
-                                        model=model,
-                                        messages=messages,
-                                        tools=tool_defs,
-                                        stream=True,
-                                    )
-                                else:
-                                    raise
-                            # Adapt to litellm-like streaming interface for the main loop below
-                            class _Delta:
-                                def __init__(self, content=None, tool_calls=None):
-                                    self.content = content
-                                    self.tool_calls = tool_calls
+                            else:
+                                raise
+                        # Adapt to litellm-like streaming interface for the main loop below
+                        class _Delta:
+                            def __init__(self, content=None, tool_calls=None):
+                                self.content = content
+                                self.tool_calls = tool_calls
 
-                            class _Choice:
-                                def __init__(self, delta, finish_reason=None):
-                                    self.delta = delta
-                                    self.finish_reason = finish_reason
+                        class _Choice:
+                            def __init__(self, delta, finish_reason=None):
+                                self.delta = delta
+                                self.finish_reason = finish_reason
 
-                            class _Chunk:
-                                def __init__(self, choice):
-                                    self.choices = [choice]
+                        class _Chunk:
+                            def __init__(self, choice):
+                                self.choices = [choice]
 
-                            class _TCFunction:
-                                def __init__(self, name=None, arguments=None):
-                                    self.name = name
-                                    self.arguments = arguments
+                        class _TCFunction:
+                            def __init__(self, name=None, arguments=None):
+                                self.name = name
+                                self.arguments = arguments
 
-                            class _TCDelta:
-                                def __init__(self, id=None, function=None):
-                                    self.id = id
-                                    self.function = function
+                        class _TCDelta:
+                            def __init__(self, id=None, function=None):
+                                self.id = id
+                                self.function = function
 
-                            def _stream_map():
-                                for c in response:
-                                    content = getattr(c.choices[0].delta, "content", None)
-                                    finish_reason = getattr(c.choices[0], "finish_reason", None)
-                                    tool_calls_wrapped = None
-                                    tcs = getattr(c.choices[0].delta, "tool_calls", None)
-                                    if tcs:
-                                        tool_calls_wrapped = []
-                                        for tc in tcs:
-                                            fn = getattr(tc, "function", None)
-                                            func = _TCFunction(
-                                                name=getattr(fn, "name", None),
-                                                arguments=getattr(fn, "arguments", None),
-                                            ) if fn is not None else None
-                                            tool_calls_wrapped.append(
-                                                _TCDelta(
-                                                    id=getattr(tc, "id", None),
-                                                    function=func,
-                                                )
+                        def _stream_map():
+                            for c in response:
+                                content = getattr(c.choices[0].delta, "content", None)
+                                finish_reason = getattr(c.choices[0], "finish_reason", None)
+                                tool_calls_wrapped = None
+                                tcs = getattr(c.choices[0].delta, "tool_calls", None)
+                                if tcs:
+                                    tool_calls_wrapped = []
+                                    for tc in tcs:
+                                        fn = getattr(tc, "function", None)
+                                        func = _TCFunction(
+                                            name=getattr(fn, "name", None),
+                                            arguments=getattr(fn, "arguments", None),
+                                        ) if fn is not None else None
+                                        tool_calls_wrapped.append(
+                                            _TCDelta(
+                                                id=getattr(tc, "id", None),
+                                                function=func,
                                             )
-                                    yield _Chunk(_Choice(_Delta(content, tool_calls_wrapped), finish_reason))
+                                        )
+                                yield _Chunk(_Choice(_Delta(content, tool_calls_wrapped), finish_reason))
 
-                            raw_response = _stream_map()
-                        else:
-                            try:
+                        raw_response = _stream_map()
+                    else:
+                        try:
+                            response = client.chat.completions.create(
+                                model=model,
+                                messages=messages,
+                                temperature=temperature,
+                                tools=tool_defs,
+                                stream=False,
+                            )
+                        except Exception as e:
+                            if "Unsupported value" in str(e) and "temperature" in str(e):
                                 response = client.chat.completions.create(
                                     model=model,
                                     messages=messages,
-                                    temperature=temperature,
                                     tools=tool_defs,
                                     stream=False,
                                 )
-                            except Exception as e:
-                                if "Unsupported value" in str(e) and "temperature" in str(e):
-                                    response = client.chat.completions.create(
-                                        model=model,
-                                        messages=messages,
-                                        tools=tool_defs,
-                                        stream=False,
-                                    )
-                                else:
-                                    raise
-                            # Normalize to iterable of one with .choices[0].delta
-                            class _DeltaObj:
-                                def __init__(self, message):
-                                    self.content = message.content
-                                    self.tool_calls = getattr(message, "tool_calls", None)
+                            else:
+                                raise
+                        # Normalize to iterable of one with .choices[0].delta
+                        class _DeltaObj:
+                            def __init__(self, message):
+                                self.content = message.content
+                                self.tool_calls = getattr(message, "tool_calls", None)
 
-                            class _ChoiceObj:
-                                def __init__(self, message):
-                                    self.delta = _DeltaObj(message)
-                                    self.finish_reason = getattr(message, "finish_reason", None)
+                        class _ChoiceObj:
+                            def __init__(self, message):
+                                self.delta = _DeltaObj(message)
+                                self.finish_reason = getattr(message, "finish_reason", None)
 
-                            class _RespObj:
-                                def __init__(self, message):
-                                    self.choices = [_ChoiceObj(message)]
+                        class _RespObj:
+                            def __init__(self, message):
+                                self.choices = [_ChoiceObj(message)]
 
-                            raw_response = [_RespObj(response.choices[0].message)]
-                    else:
+                        raw_response = [_RespObj(response.choices[0].message)]
+                else:
+                    try:
+                        litellm = _get_litellm()
+                        raw_response = litellm.completion(**params)
+                    except ImportError:
                         self._spinner.stop()
-                        print(
-                            "\nDependency error: Failed to import 'litellm' and provider is not OpenAI for direct fallback.\n"
-                        )
+                        print("\nDependency error: litellm is required for this provider.\n")
                         return
 
                 if not stream:
