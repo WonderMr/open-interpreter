@@ -722,6 +722,8 @@ def create_router(async_interpreter):
         max_tokens: Optional[int] = None
         temperature: Optional[float] = None
         stream: Optional[bool] = False
+        # Accept new OpenAI parameter naming as well
+        max_completion_tokens: Optional[int] = None
 
     async def openai_compatible_generator(run_code):
         if run_code:

@@ -27,6 +27,26 @@ from .utils.convert_to_openai_messages import convert_to_openai_messages
 logger = logging.getLogger("LiteLLM")
 
 
+def needs_max_completion_tokens(model_name: str) -> bool:
+    """Return True if the model is known to require max_completion_tokens.
+
+    This mirrors the detection logic used when building params and exposes it for tests/consumers.
+    """
+    if not model_name:
+        return False
+    model_base = model_name.split("/")[-1].lower()
+    models_requiring = [
+        "o1-preview",
+        "o1-mini",
+        "o1",
+        "o3",
+        "gpt-5",
+        "gpt-5-mini",
+        "gpt-5-nano",
+    ]
+    return any(model_base.startswith(m) for m in models_requiring)
+
+
 class SuppressDebugFilter(logging.Filter):
     def filter(self, record):
         # Suppress only the specific message containing the keywords
@@ -499,9 +519,16 @@ def fixed_litellm_completions(**params):
                 )
                 # So, let's try one more time with a dummy API key:
                 params["api_key"] = "x"
-            if attempt == 1:
-                # Try turning up the temperature?
-                params["temperature"] = params.get("temperature", 0.0) + 0.1
+                params["num_retries"] = 0  # reset back-off timer
+                try:
+                    yield from litellm.completion(**params)
+                    return
+                except Exception:
+                    pass
 
-    if first_error is not None:
-        raise first_error  # If all attempts fail, raise the first error
+            # If everything fails, exponential backoff
+            time.sleep(min(attempt * attempt, 10))
+
+    # If all attempts fail, raise the first exception
+    if first_error:
+        raise first_error
