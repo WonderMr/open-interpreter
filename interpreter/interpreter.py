@@ -19,11 +19,51 @@ os.environ["LITELLM_LOCAL_MODEL_COST_MAP"] = "True"
 import webbrowser
 from urllib.parse import quote
 
-import litellm
 
-litellm.suppress_debug_info = True
-litellm.REPEATED_STREAMING_CHUNK_LIMIT = 99999999
-litellm.modify_params = True
+def _get_litellm():
+    """Lazily import and configure litellm to avoid hard crashes at startup.
+
+    This defers importing litellm (and its transitive dependencies like openai)
+    until it's actually needed. If the import fails due to incompatible versions,
+    we raise a concise, actionable error message.
+    """
+    global _litellm_cached
+    try:
+        return _litellm_cached
+    except NameError:
+        pass
+
+    try:
+        import litellm as _litellm
+    except Exception as import_error:
+        raise ImportError("litellm is unavailable; using OpenAI client directly.") from import_error
+
+        # Unreachable but keeps linters happy
+        # return None  # type: ignore
+
+    _litellm.suppress_debug_info = True
+    _litellm.REPEATED_STREAMING_CHUNK_LIMIT = 99999999
+    _litellm.modify_params = True
+    _litellm_cached = _litellm
+    return _litellm
+
+
+def _openai_client(api_key: str | None, api_base: str | None):
+    """Lazily construct an OpenAI client using the modern SDK.
+
+    Falls back with a clear error if the OpenAI SDK is missing.
+    """
+    try:
+        from openai import OpenAI
+    except Exception as import_error:
+        raise ImportError("openai SDK is not installed.") from import_error
+
+    client_kwargs: dict[str, object] = {}
+    if api_key:
+        client_kwargs["api_key"] = api_key
+    if api_base:
+        client_kwargs["base_url"] = api_base
+    return OpenAI(**client_kwargs)
 # litellm.drop_params = True
 
 from anthropic import Anthropic
@@ -256,19 +296,36 @@ class Interpreter:
             # For some reason, Litellm can't find the model info for these
             provider = "anthropic"
 
-        # Only try to get model info if we need either provider or max_tokens
-        if provider is None or max_tokens is None:
+        # If model clearly looks like an OpenAI model, set provider eagerly to avoid
+        # depending on litellm metadata (which can fail if dependencies mismatch).
+        if provider is None and (
+            self.model.startswith("gpt-")
+            or self.model.startswith("openai/")
+            or self.model in {"gpt-5", "gpt-5-mini", "gpt-5-nano", "gpt-5-chat-latest"}
+        ):
+            provider = "openai"
+
+        # Only try to get model info if we still need either provider or max_tokens
+        if provider is None or (max_tokens is None and provider != "openai"):
             try:
+                litellm = _get_litellm()
                 model_info = litellm.get_model_info(self.model)
                 if provider is None:
                     provider = model_info["litellm_provider"]
                 if max_tokens is None:
                     max_tokens = model_info["max_tokens"]
-            except:
-                # Fallback values if model info unavailable
+            except ImportError:
+                # Can't import litellm to resolve metadata; fall back safely
                 if provider is None:
                     provider = "openai"
-                if max_tokens is None:
+                if max_tokens is None and provider != "openai":
+                    max_tokens = 4000
+            except Exception:
+                # Fallback values if model info unavailable
+                if provider is None:
+                    # Prefer openai for gpt-* models
+                    provider = "openai"
+                if max_tokens is None and provider != "openai":
                     max_tokens = 4000
 
         if self.system_message is None:
@@ -737,11 +794,151 @@ Notes for using the `str_replace` command:
                             print(str(m))
                     print()
 
-                raw_response = litellm.completion(**params)
+                if provider == "openai":
+                    stream = params.get("stream", True)
+                    client = _openai_client(self.api_key, api_base)
+                    # Extract OpenAI-friendly payload
+                    model = params["model"]
+                    messages = params["messages"]
+                    temperature = params.get("temperature", 0)
+                    tools_param = params.get("tools")
+
+                    # Prepare tool definitions for OpenAI (function calling)
+                    tool_defs = None
+                    if tools_param:
+                        tool_defs = []
+                        for t in tools_param:
+                            if t.get("type") == "function":
+                                # Ensure arguments is JSON-serializable string
+                                func = dict(t["function"])
+                                if "arguments" in func and isinstance(func["arguments"], dict):
+                                    import json as _json
+                                    func["arguments"] = _json.dumps(func["arguments"])  # type: ignore
+                                tool_defs.append({
+                                    "type": "function",
+                                    "function": func,
+                                })
+
+                    if stream:
+                        # Some models support only default temperature. Retry without it on 400.
+                        try:
+                            response = client.chat.completions.create(
+                                model=model,
+                                messages=messages,
+                                temperature=temperature,
+                                tools=tool_defs,
+                                stream=True,
+                            )
+                        except Exception as e:
+                            if "Unsupported value" in str(e) and "temperature" in str(e):
+                                response = client.chat.completions.create(
+                                    model=model,
+                                    messages=messages,
+                                    tools=tool_defs,
+                                    stream=True,
+                                )
+                            else:
+                                raise
+                        # Adapt to litellm-like streaming interface for the main loop below
+                        class _Delta:
+                            def __init__(self, content=None, tool_calls=None):
+                                self.content = content
+                                self.tool_calls = tool_calls
+
+                        class _Choice:
+                            def __init__(self, delta, finish_reason=None):
+                                self.delta = delta
+                                self.finish_reason = finish_reason
+
+                        class _Chunk:
+                            def __init__(self, choice):
+                                self.choices = [choice]
+
+                        class _TCFunction:
+                            def __init__(self, name=None, arguments=None):
+                                self.name = name
+                                self.arguments = arguments
+
+                        class _TCDelta:
+                            def __init__(self, id=None, function=None):
+                                self.id = id
+                                self.function = function
+
+                        def _stream_map():
+                            for c in response:
+                                content = getattr(c.choices[0].delta, "content", None)
+                                finish_reason = getattr(c.choices[0], "finish_reason", None)
+                                tool_calls_wrapped = None
+                                tcs = getattr(c.choices[0].delta, "tool_calls", None)
+                                if tcs:
+                                    tool_calls_wrapped = []
+                                    for tc in tcs:
+                                        fn = getattr(tc, "function", None)
+                                        func = _TCFunction(
+                                            name=getattr(fn, "name", None),
+                                            arguments=getattr(fn, "arguments", None),
+                                        ) if fn is not None else None
+                                        tool_calls_wrapped.append(
+                                            _TCDelta(
+                                                id=getattr(tc, "id", None),
+                                                function=func,
+                                            )
+                                        )
+                                yield _Chunk(_Choice(_Delta(content, tool_calls_wrapped), finish_reason))
+
+                        raw_response = _stream_map()
+                    else:
+                        try:
+                            response = client.chat.completions.create(
+                                model=model,
+                                messages=messages,
+                                temperature=temperature,
+                                tools=tool_defs,
+                                stream=False,
+                            )
+                        except Exception as e:
+                            if "Unsupported value" in str(e) and "temperature" in str(e):
+                                response = client.chat.completions.create(
+                                    model=model,
+                                    messages=messages,
+                                    tools=tool_defs,
+                                    stream=False,
+                                )
+                            else:
+                                raise
+                        # Normalize to iterable of one with .choices[0].delta
+                        class _DeltaObj:
+                            def __init__(self, message):
+                                self.content = message.content
+                                self.tool_calls = getattr(message, "tool_calls", None)
+
+                        class _ChoiceObj:
+                            def __init__(self, message):
+                                self.delta = _DeltaObj(message)
+                                self.finish_reason = getattr(message, "finish_reason", None)
+
+                        class _RespObj:
+                            def __init__(self, message):
+                                self.choices = [_ChoiceObj(message)]
+
+                        raw_response = [_RespObj(response.choices[0].message)]
+                else:
+                    try:
+                        litellm = _get_litellm()
+                        raw_response = litellm.completion(**params)
+                    except ImportError:
+                        self._spinner.stop()
+                        print("\nDependency error: litellm is required for this provider.\n")
+                        return
 
                 if not stream:
-                    raw_response.choices[0].delta = raw_response.choices[0].message
-                    raw_response = [raw_response]
+                    try:
+                        # Normalize litellm single response to iterable of one
+                        raw_response.choices[0].delta = raw_response.choices[0].message
+                        raw_response = [raw_response]
+                    except Exception:
+                        # Already normalized (e.g., fallback created a list)
+                        pass
 
                 if not self.tool_calling:
                     # Add the original message to the messages list
@@ -866,7 +1063,26 @@ Notes for using the `str_replace` command:
                         edit = ToolRenderer()
 
                 if self.tool_calling:
-                    self.messages.append(message)
+                    assistant_message = {
+                        "role": "assistant",
+                        "content": getattr(message, "content", "") or "",
+                    }
+                    tool_calls = getattr(message, "tool_calls", None)
+                    if tool_calls:
+                        mapped_calls = []
+                        for tc in tool_calls:
+                            mapped_calls.append(
+                                {
+                                    "id": getattr(tc, "id", None),
+                                    "type": "function",
+                                    "function": {
+                                        "name": getattr(getattr(tc, "function", None), "name", None),
+                                        "arguments": getattr(getattr(tc, "function", None), "arguments", "") or "",
+                                    },
+                                }
+                            )
+                        assistant_message["tool_calls"] = mapped_calls
+                    self.messages.append(assistant_message)
 
                 print()
 
