@@ -839,7 +839,7 @@ Notes for using the `str_replace` command:
                                     )
                                 else:
                                     raise
-                            # Adapt to litellm-like streaming interface
+                            # Adapt to litellm-like streaming interface for the main loop below
                             class _Delta:
                                 def __init__(self, content=None):
                                     self.content = content
@@ -853,12 +853,11 @@ Notes for using the `str_replace` command:
                                 def __init__(self, content):
                                     self.choices = [_Choice(_Delta(content))]
 
-                            first_token = True
-                            for chunk in response:
-                                yield _Chunk(getattr(chunk.choices[0].delta, "content", None))
-                                if first_token:
-                                    self._spinner.stop()
-                                    first_token = False
+                            def _stream_map():
+                                for chunk in response:
+                                    yield _Chunk(getattr(chunk.choices[0].delta, "content", None))
+
+                            raw_response = _stream_map()
                         else:
                             try:
                                 response = client.chat.completions.create(
@@ -901,8 +900,13 @@ Notes for using the `str_replace` command:
                         return
 
                 if not stream:
-                    raw_response.choices[0].delta = raw_response.choices[0].message
-                    raw_response = [raw_response]
+                    try:
+                        # Normalize litellm single response to iterable of one
+                        raw_response.choices[0].delta = raw_response.choices[0].message
+                        raw_response = [raw_response]
+                    except Exception:
+                        # Already normalized (e.g., fallback created a list)
+                        pass
 
                 if not self.tool_calling:
                     # Add the original message to the messages list
