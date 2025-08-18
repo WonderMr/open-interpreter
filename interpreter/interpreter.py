@@ -291,7 +291,11 @@ class Interpreter:
                     provider = model_info["litellm_provider"]
                 if max_tokens is None:
                     max_tokens = model_info["max_tokens"]
-            except:
+            except ImportError as e:
+                self._spinner.stop()
+                print("\nDependency error: " + str(e) + "\n")
+                return
+            except Exception:
                 # Fallback values if model info unavailable
                 if provider is None:
                     provider = "openai"
@@ -764,8 +768,13 @@ Notes for using the `str_replace` command:
                             print(str(m))
                     print()
 
-                litellm = _get_litellm()
-                raw_response = litellm.completion(**params)
+                try:
+                    litellm = _get_litellm()
+                    raw_response = litellm.completion(**params)
+                except ImportError as e:
+                    self._spinner.stop()
+                    print("\nDependency error: " + str(e) + "\n")
+                    return
 
                 if not stream:
                     raw_response.choices[0].delta = raw_response.choices[0].message
