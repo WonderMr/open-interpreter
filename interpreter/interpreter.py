@@ -826,13 +826,25 @@ Notes for using the `str_replace` command:
                                     })
 
                         if stream:
-                            response = client.chat.completions.create(
-                                model=model,
-                                messages=messages,
-                                temperature=temperature,
-                                tools=tool_defs,
-                                stream=True,
-                            )
+                            # Some models support only default temperature. Retry without it on 400.
+                            try:
+                                response = client.chat.completions.create(
+                                    model=model,
+                                    messages=messages,
+                                    temperature=temperature,
+                                    tools=tool_defs,
+                                    stream=True,
+                                )
+                            except Exception as e:
+                                if "Unsupported value" in str(e) and "temperature" in str(e):
+                                    response = client.chat.completions.create(
+                                        model=model,
+                                        messages=messages,
+                                        tools=tool_defs,
+                                        stream=True,
+                                    )
+                                else:
+                                    raise
                             # Adapt to litellm-like streaming interface
                             class _Delta:
                                 def __init__(self, content=None):
@@ -854,13 +866,24 @@ Notes for using the `str_replace` command:
                                     self._spinner.stop()
                                     first_token = False
                         else:
-                            response = client.chat.completions.create(
-                                model=model,
-                                messages=messages,
-                                temperature=temperature,
-                                tools=tool_defs,
-                                stream=False,
-                            )
+                            try:
+                                response = client.chat.completions.create(
+                                    model=model,
+                                    messages=messages,
+                                    temperature=temperature,
+                                    tools=tool_defs,
+                                    stream=False,
+                                )
+                            except Exception as e:
+                                if "Unsupported value" in str(e) and "temperature" in str(e):
+                                    response = client.chat.completions.create(
+                                        model=model,
+                                        messages=messages,
+                                        tools=tool_defs,
+                                        stream=False,
+                                    )
+                                else:
+                                    raise
                             # Normalize to iterable of one with .choices[0].delta
                             class _DeltaObj:
                                 def __init__(self, message):

@@ -57,8 +57,6 @@ interpreter --tools interpreter,editor,gui
 
 ```bash
 pip install open-interpreter
-# Or install from git (fixes startup import issues on some systems):
-# pip install git+https://github.com/WonderMr/Open-Interpreter.git@cursor/fix-openai-import-error-on-startup-8104 --force-reinstall --no-cache-dir
 ```
 
 ```python
