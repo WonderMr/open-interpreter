@@ -293,7 +293,13 @@ Continuing...
         if self.api_version:
             params["api_version"] = self.api_version
         if self.max_tokens:
-            params["max_tokens"] = self.max_tokens
+            # Use max_completion_tokens for OpenAI o1 models, max_tokens for others
+            model_lower = self.model.lower() if self.model else ""
+            if ("o1-preview" in model_lower or "o1-mini" in model_lower or 
+                model_lower.startswith("o1") or "/o1" in model_lower):
+                params["max_completion_tokens"] = self.max_tokens
+            else:
+                params["max_tokens"] = self.max_tokens
         if self.temperature:
             params["temperature"] = self.temperature
         if hasattr(self.interpreter, "conversation_id"):
