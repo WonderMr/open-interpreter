@@ -282,7 +282,16 @@ class Interpreter:
             # For some reason, Litellm can't find the model info for these
             provider = "anthropic"
 
-        # Only try to get model info if we need either provider or max_tokens
+        # If model clearly looks like an OpenAI model, set provider eagerly to avoid
+        # depending on litellm metadata (which can fail if dependencies mismatch).
+        if provider is None and (
+            self.model.startswith("gpt-")
+            or self.model.startswith("openai/")
+            or self.model in {"gpt-5", "gpt-5-mini", "gpt-5-nano", "gpt-5-chat-latest"}
+        ):
+            provider = "openai"
+
+        # Only try to get model info if we still need either provider or max_tokens
         if provider is None or max_tokens is None:
             try:
                 litellm = _get_litellm()
