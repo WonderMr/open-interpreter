@@ -26,11 +26,10 @@ class _BashSession:
         if self._started:
             return
 
-        self._process = await asyncio.create_subprocess_shell(
+        # Launch an interactive bash process we can reuse across calls
+        self._process = await asyncio.create_subprocess_exec(
             self.command,
             preexec_fn=os.setsid,
-            shell=True,
-            bufsize=0,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -48,15 +47,6 @@ class _BashSession:
 
     async def run(self, command: str):
         """Execute a command in the bash shell."""
-        # Ask for user permission before executing the command
-        print(f"Do you want to execute the following command?\n{command}")
-        user_input = input("Enter 'yes' to proceed, anything else to cancel: ")
-
-        if user_input.lower() != "yes":
-            return ToolResult(
-                system="Command execution cancelled by user",
-                error="User did not provide permission to execute the command.",
-            )
         if not self._started:
             raise ToolError("Session has not started.")
         if self._process.returncode is not None:
@@ -76,24 +66,17 @@ class _BashSession:
 
         # send command to the process
         self._process.stdin.write(
-            command.encode() + f"; echo '{self._sentinel}'\n".encode()
+            (command + f"; echo '{self._sentinel}'\n").encode()
         )
         await self._process.stdin.drain()
 
         # read output from the process, until the sentinel is found
         try:
             async with asyncio.timeout(self._timeout):
-                while True:
-                    await asyncio.sleep(self._output_delay)
-                    # if we read directly from stdout/stderr, it will wait forever for
-                    # EOF. use the StreamReader buffer directly instead.
-                    output = (
-                        self._process.stdout._buffer.decode()
-                    )  # pyright: ignore[reportAttributeAccessIssue]
-                    if self._sentinel in output:
-                        # strip the sentinel and break
-                        output = output[: output.index(self._sentinel)]
-                        break
+                data = await self._process.stdout.readuntil(
+                    self._sentinel.encode()
+                )
+                output = data.decode().split(self._sentinel, 1)[0]
         except asyncio.TimeoutError:
             self._timed_out = True
             raise ToolError(
@@ -103,15 +86,18 @@ class _BashSession:
         if output.endswith("\n"):
             output = output[:-1]
 
-        error = (
-            self._process.stderr._buffer.decode()
-        )  # pyright: ignore[reportAttributeAccessIssue]
-        if error.endswith("\n"):
-            error = error[:-1]
-
-        # clear the buffers so that the next output can be read correctly
-        self._process.stdout._buffer.clear()  # pyright: ignore[reportAttributeAccessIssue]
-        self._process.stderr._buffer.clear()  # pyright: ignore[reportAttributeAccessIssue]
+        # try to read any currently buffered stderr without blocking
+        error = ""
+        try:
+            stderr_buf = self._process.stderr._buffer  # pyright: ignore[reportAttributeAccessIssue]
+            error = stderr_buf.decode()
+            if error.endswith("\n"):
+                error = error[:-1]
+            # clear the buffers so that the next output can be read correctly
+            stderr_buf.clear()  # pyright: ignore[reportAttributeAccessIssue]
+        except Exception:
+            # If we cannot access internal buffer, fall back to no-op
+            error = None
 
         return CLIResult(output=output, error=error)
 

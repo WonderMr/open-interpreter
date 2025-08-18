@@ -571,7 +571,14 @@ Use """ to write multi-line messages.
 
     # Standard in mode
     if args.stdin:
-        stdin_input = input()
+        # Read all piped stdin; fallback to empty string when none
+        try:
+            if not sys.stdin.isatty():
+                stdin_input = sys.stdin.read()
+            else:
+                stdin_input = input()
+        except EOFError:
+            stdin_input = ""
         interpreter.plain_text_display = True
         interpreter.chat(stdin_input)
     else:

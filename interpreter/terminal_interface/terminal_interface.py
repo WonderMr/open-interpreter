@@ -253,7 +253,7 @@ def terminal_interface(interpreter, message):
 
                             # Delete the temporary file
                             os.unlink(tf.name)
-                            active_block = CodeBlock()
+                            active_block = CodeBlock(interpreter)
                             active_block.margin_top = False  # <- Aesthetic choice
                             active_block.language = language
                             active_block.code = code
@@ -345,7 +345,7 @@ def terminal_interface(interpreter, message):
                 # Assistant code blocks
                 elif chunk["role"] == "assistant" and chunk["type"] == "code":
                     if "start" in chunk:
-                        active_block = CodeBlock()
+                        active_block = CodeBlock(interpreter)
                         active_block.language = chunk["format"]
                         render_cursor = True
 
@@ -508,7 +508,7 @@ def terminal_interface(interpreter, message):
                         if not isinstance(active_block, CodeBlock):
                             if active_block:
                                 active_block.end()
-                            active_block = CodeBlock()
+                            active_block = CodeBlock(interpreter)
 
                 if active_block:
                     active_block.refresh(cursor=render_cursor)
