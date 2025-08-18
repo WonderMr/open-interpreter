@@ -315,10 +315,9 @@ class Interpreter:
 
             _, outstanding_tool_calls = _find_unanswered_tool_calls(self.messages)
             if outstanding_tool_calls:
-                if self.auto_run:
-                    user_approval = "y"
-                else:
-                    user_approval = input("\nRun tool(s)? (y/n): ").lower().strip()
+                # Do not prompt here to avoid consuming user chat input.
+                # Auto-run if configured, otherwise mark as cancelled.
+                user_approval = "y" if self.auto_run else "n"
 
                 user_content_to_add: list[dict[str, Any]] = []
                 for tc in outstanding_tool_calls:
