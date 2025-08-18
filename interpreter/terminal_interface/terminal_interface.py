@@ -15,6 +15,8 @@ import re
 import subprocess
 import tempfile
 import time
+import sys
+import threading
 
 from ..core.utils.scan_code import scan_code
 from ..core.utils.system_debug_info import system_info
@@ -111,7 +113,7 @@ def terminal_interface(interpreter, message):
                 pass
 
         if isinstance(message, str):
-            # This is for the terminal interface being used as a CLI — messages are strings.
+            # This is for the terminal interface being used as a CLI — messages are strings.
             # This won't fire if they're in the python package, display=True, and they passed in an array of messages (for example).
 
             if message == "":
@@ -158,8 +160,86 @@ def terminal_interface(interpreter, message):
                         "content": image_path,
                     }
 
+        # Spinner while waiting for first chunk
+        spinner_stop_event = threading.Event()
+
+        def _spinner():
+            frames = "|/-\\"
+            label = "Waiting for response "
+            i = 0
+            while not spinner_stop_event.is_set():
+                try:
+                    sys.stdout.write("\r" + label + frames[i % len(frames)])
+                    sys.stdout.flush()
+                except Exception:
+                    pass
+                time.sleep(0.1)
+                i += 1
+            try:
+                sys.stdout.write("\r" + " " * (len(label) + 2) + "\r")
+                sys.stdout.flush()
+            except Exception:
+                pass
+
+        spinner_thread = threading.Thread(target=_spinner, daemon=True)
+        spinner_thread.start()
+        got_first_chunk = False
+
+        # Execution spinner (runs while code executes and before first console output)
+        exec_spinner_stop_event = None
+        exec_spinner_thread = None
+        exec_spinner_running = False
+
+        def _exec_spinner():
+            frames = "|/-\\"
+            label = "Running code "
+            i = 0
+            while exec_spinner_stop_event and not exec_spinner_stop_event.is_set():
+                try:
+                    sys.stdout.write("\r" + label + frames[i % len(frames)])
+                    sys.stdout.flush()
+                except Exception:
+                    pass
+                time.sleep(0.1)
+                i += 1
+            try:
+                sys.stdout.write("\r" + " " * (len(label) + 2) + "\r")
+                sys.stdout.flush()
+            except Exception:
+                pass
+
+        # Processing spinner (between code completion and next output)
+        proc_spinner_stop_event = None
+        proc_spinner_thread = None
+        proc_spinner_running = False
+
+        def _proc_spinner():
+            frames = "|/-\\"
+            label = "Processing request "
+            i = 0
+            while proc_spinner_stop_event and not proc_spinner_stop_event.is_set():
+                try:
+                    sys.stdout.write("\r" + label + frames[i % len(frames)])
+                    sys.stdout.flush()
+                except Exception:
+                    pass
+                time.sleep(0.1)
+                i += 1
+            try:
+                sys.stdout.write("\r" + " " * (len(label) + 2) + "\r")
+                sys.stdout.flush()
+            except Exception:
+                pass
+
         try:
             for chunk in interpreter.chat(message, display=False, stream=True):
+                if not got_first_chunk:
+                    spinner_stop_event.set()
+                    try:
+                        spinner_thread.join(timeout=0.2)
+                    except Exception:
+                        pass
+                    got_first_chunk = True
                 yield chunk
 
                 # Is this for thine eyes?
@@ -232,6 +312,13 @@ def terminal_interface(interpreter, message):
                             active_block.margin_top = False  # <- Aesthetic choice
                             active_block.language = language
                             active_block.code = code
+
+                            # Start execution spinner until first console output arrives
+                            if not interpreter.plain_text_display and not exec_spinner_running:
+                                exec_spinner_stop_event = threading.Event()
+                                exec_spinner_thread = threading.Thread(target=_exec_spinner, daemon=True)
+                                exec_spinner_thread.start()
+                                exec_spinner_running = True
                         elif response.strip().lower() == "e":
                             # Edit
 
@@ -253,10 +340,16 @@ def terminal_interface(interpreter, message):
 
                             # Delete the temporary file
                             os.unlink(tf.name)
-                            active_block = CodeBlock()
+                            active_block = CodeBlock(interpreter)
                             active_block.margin_top = False  # <- Aesthetic choice
                             active_block.language = language
                             active_block.code = code
+
+                            if not interpreter.plain_text_display and not exec_spinner_running:
+                                exec_spinner_stop_event = threading.Event()
+                                exec_spinner_thread = threading.Thread(target=_exec_spinner, daemon=True)
+                                exec_spinner_thread.start()
+                                exec_spinner_running = True
                         else:
                             # User declined to run code.
                             interpreter.messages.append(
@@ -291,9 +384,33 @@ def terminal_interface(interpreter, message):
                         active_block.end()
                         active_block = None
 
+                        # Stop execution spinner on block end
+                        if exec_spinner_running and exec_spinner_stop_event:
+                            exec_spinner_stop_event.set()
+                            try:
+                                exec_spinner_thread.join(timeout=0.2)  # type: ignore[arg-type]
+                            except Exception:
+                                pass
+                            exec_spinner_running = False
+
+                        # Start processing spinner while AI formats the answer
+                        if not interpreter.plain_text_display and not proc_spinner_running:
+                            proc_spinner_stop_event = threading.Event()
+                            proc_spinner_thread = threading.Thread(target=_proc_spinner, daemon=True)
+                            proc_spinner_thread.start()
+                            proc_spinner_running = True
+
                 # Assistant message blocks
                 if chunk["type"] == "message":
                     if "start" in chunk:
+                        # Stop processing spinner when a new message begins
+                        if proc_spinner_running and proc_spinner_stop_event:
+                            proc_spinner_stop_event.set()
+                            try:
+                                proc_spinner_thread.join(timeout=0.2)  # type: ignore[arg-type]
+                            except Exception:
+                                pass
+                            proc_spinner_running = False
                         active_block = MessageBlock()
                         render_cursor = True
 
@@ -345,7 +462,15 @@ def terminal_interface(interpreter, message):
                 # Assistant code blocks
                 elif chunk["role"] == "assistant" and chunk["type"] == "code":
                     if "start" in chunk:
-                        active_block = CodeBlock()
+                        # Stop processing spinner when a new code block starts
+                        if proc_spinner_running and proc_spinner_stop_event:
+                            proc_spinner_stop_event.set()
+                            try:
+                                proc_spinner_thread.join(timeout=0.2)  # type: ignore[arg-type]
+                            except Exception:
+                                pass
+                            proc_spinner_running = False
+                        active_block = CodeBlock(interpreter)
                         active_block.language = chunk["format"]
                         render_cursor = True
 
@@ -363,6 +488,14 @@ def terminal_interface(interpreter, message):
                         or ("format" in chunk and chunk["format"] == "javascript")
                     )
                 ):
+                    # Stop processing spinner when computer output is displayed
+                    if proc_spinner_running and proc_spinner_stop_event:
+                        proc_spinner_stop_event.set()
+                        try:
+                            proc_spinner_thread.join(timeout=0.2)  # type: ignore[arg-type]
+                        except Exception:
+                            pass
+                        proc_spinner_running = False
                     if (interpreter.os == True) and (interpreter.verbose == False):
                         # We don't display things to the user in OS control mode, since we use vision to communicate the screen to the LLM so much.
                         # But if verbose is true, we do display it!
@@ -423,6 +556,23 @@ def terminal_interface(interpreter, message):
                 # Console
                 if chunk["type"] == "console":
                     render_cursor = False
+                    # Stop execution spinner on first console output
+                    if exec_spinner_running and exec_spinner_stop_event:
+                        exec_spinner_stop_event.set()
+                        try:
+                            exec_spinner_thread.join(timeout=0.2)  # type: ignore[arg-type]
+                        except Exception:
+                            pass
+                        exec_spinner_running = False
+                    # Stop processing spinner once output resumes
+                    if proc_spinner_running and proc_spinner_stop_event:
+                        proc_spinner_stop_event.set()
+                        try:
+                            proc_spinner_thread.join(timeout=0.2)  # type: ignore[arg-type]
+                        except Exception:
+                            pass
+                        proc_spinner_running = False
+
                     if "format" in chunk and chunk["format"] == "output":
                         active_block.output += "\n" + chunk["content"]
                         active_block.output = (
@@ -508,7 +658,7 @@ def terminal_interface(interpreter, message):
                         if not isinstance(active_block, CodeBlock):
                             if active_block:
                                 active_block.end()
-                            active_block = CodeBlock()
+                            active_block = CodeBlock(interpreter)
 
                 if active_block:
                     active_block.refresh(cursor=render_cursor)
@@ -532,6 +682,24 @@ def terminal_interface(interpreter, message):
 
             if interactive:
                 # (this cancels LLM, returns to the interactive "> " input)
+                # Ensure spinners are stopped
+                spinner_stop_event.set()
+                try:
+                    spinner_thread.join(timeout=0.2)
+                except Exception:
+                    pass
+                if exec_spinner_running and exec_spinner_stop_event:
+                    exec_spinner_stop_event.set()
+                    try:
+                        exec_spinner_thread.join(timeout=0.2)  # type: ignore[arg-type]
+                    except Exception:
+                        pass
+                if proc_spinner_running and proc_spinner_stop_event:
+                    proc_spinner_stop_event.set()
+                    try:
+                        proc_spinner_thread.join(timeout=0.2)  # type: ignore[arg-type]
+                    except Exception:
+                        pass
                 continue
             else:
                 break
@@ -539,3 +707,21 @@ def terminal_interface(interpreter, message):
             if interpreter.debug:
                 system_info(interpreter)
             raise
+        finally:
+            spinner_stop_event.set()
+            try:
+                spinner_thread.join(timeout=0.2)
+            except Exception:
+                pass
+            if exec_spinner_running and exec_spinner_stop_event:
+                exec_spinner_stop_event.set()
+                try:
+                    exec_spinner_thread.join(timeout=0.2)  # type: ignore[arg-type]
+                except Exception:
+                    pass
+            if proc_spinner_running and proc_spinner_stop_event:
+                proc_spinner_stop_event.set()
+                try:
+                    proc_spinner_thread.join(timeout=0.2)  # type: ignore[arg-type]
+                except Exception:
+                    pass

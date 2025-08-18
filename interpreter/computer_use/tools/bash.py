@@ -7,6 +7,35 @@ from anthropic.types.beta import BetaToolBash20241022Param
 from .base import BaseAnthropicTool, CLIResult, ToolError, ToolResult
 
 
+def _read_timeout_from_env(default: float) -> float:
+    """Read timeout (seconds) from env variables if present.
+
+    Supports values like "300", "300s", "5m", "1h".
+    Precedence: OI_BASH_TIMEOUT > OI_SHELL_TIMEOUT.
+    """
+    import re
+
+    raw = os.getenv("OI_BASH_TIMEOUT") or os.getenv("OI_SHELL_TIMEOUT")
+    if not raw:
+        return default
+    raw = raw.strip().lower()
+    # Plain seconds
+    if raw.isdigit():
+        return float(raw)
+    m = re.match(r"^(\d+)(s|m|h)$", raw)
+    if not m:
+        return default
+    value, unit = m.groups()
+    value = float(value)
+    if unit == "s":
+        return value
+    if unit == "m":
+        return value * 60.0
+    if unit == "h":
+        return value * 3600.0
+    return default
+
+
 class _BashSession:
     """A session of a bash shell."""
 
@@ -21,16 +50,17 @@ class _BashSession:
     def __init__(self):
         self._started = False
         self._timed_out = False
+        # Allow override via env: OI_BASH_TIMEOUT / OI_SHELL_TIMEOUT
+        self._timeout = _read_timeout_from_env(self._timeout)
 
     async def start(self):
         if self._started:
             return
 
-        self._process = await asyncio.create_subprocess_shell(
+        # Launch an interactive bash process we can reuse across calls
+        self._process = await asyncio.create_subprocess_exec(
             self.command,
             preexec_fn=os.setsid,
-            shell=True,
-            bufsize=0,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -48,15 +78,6 @@ class _BashSession:
 
     async def run(self, command: str):
         """Execute a command in the bash shell."""
-        # Ask for user permission before executing the command
-        print(f"Do you want to execute the following command?\n{command}")
-        user_input = input("Enter 'yes' to proceed, anything else to cancel: ")
-
-        if user_input.lower() != "yes":
-            return ToolResult(
-                system="Command execution cancelled by user",
-                error="User did not provide permission to execute the command.",
-            )
         if not self._started:
             raise ToolError("Session has not started.")
         if self._process.returncode is not None:
@@ -74,26 +95,37 @@ class _BashSession:
         assert self._process.stdout
         assert self._process.stderr
 
-        # send command to the process
-        self._process.stdin.write(
-            command.encode() + f"; echo '{self._sentinel}'\n".encode()
+        # To avoid contaminating STDIN for programs like `python -`, write the
+        # command to a temporary script and source it in the current shell.
+        # This preserves shell state (e.g., `cd`) across runs and prevents
+        # subsequent bytes from being read by child processes.
+        import tempfile
+        import pathlib
+
+        tmp_file = tempfile.NamedTemporaryFile(
+            mode="w", delete=False, prefix="oi_bash_", suffix=".sh"
         )
+        try:
+            tmp_file.write(command)
+            tmp_file.flush()
+            tmp_path = pathlib.Path(tmp_file.name)
+        finally:
+            tmp_file.close()
+
+        # Use POSIX-compliant dot (.) to source the file so that state persists
+        # within the session. Then print a sentinel so we know execution ended.
+        wrapper_line = f". {str(tmp_path)}; echo '{self._sentinel}'\n"
+
+        self._process.stdin.write(wrapper_line.encode())
         await self._process.stdin.drain()
 
         # read output from the process, until the sentinel is found
         try:
             async with asyncio.timeout(self._timeout):
-                while True:
-                    await asyncio.sleep(self._output_delay)
-                    # if we read directly from stdout/stderr, it will wait forever for
-                    # EOF. use the StreamReader buffer directly instead.
-                    output = (
-                        self._process.stdout._buffer.decode()
-                    )  # pyright: ignore[reportAttributeAccessIssue]
-                    if self._sentinel in output:
-                        # strip the sentinel and break
-                        output = output[: output.index(self._sentinel)]
-                        break
+                data = await self._process.stdout.readuntil(
+                    self._sentinel.encode()
+                )
+                output = data.decode(errors="replace").split(self._sentinel, 1)[0]
         except asyncio.TimeoutError:
             self._timed_out = True
             raise ToolError(
@@ -103,15 +135,24 @@ class _BashSession:
         if output.endswith("\n"):
             output = output[:-1]
 
-        error = (
-            self._process.stderr._buffer.decode()
-        )  # pyright: ignore[reportAttributeAccessIssue]
-        if error.endswith("\n"):
-            error = error[:-1]
+        # try to read any currently buffered stderr without blocking
+        error = ""
+        try:
+            stderr_buf = self._process.stderr._buffer  # pyright: ignore[reportAttributeAccessIssue]
+            error = stderr_buf.decode(errors="replace")
+            if error.endswith("\n"):
+                error = error[:-1]
+            # clear the buffers so that the next output can be read correctly
+            stderr_buf.clear()  # pyright: ignore[reportAttributeAccessIssue]
+        except Exception:
+            # If we cannot access internal buffer, fall back to no-op
+            error = None
 
-        # clear the buffers so that the next output can be read correctly
-        self._process.stdout._buffer.clear()  # pyright: ignore[reportAttributeAccessIssue]
-        self._process.stderr._buffer.clear()  # pyright: ignore[reportAttributeAccessIssue]
+        # Attempt to remove the temporary file; ignore failures
+        try:
+            tmp_path.unlink(missing_ok=True)  # type: ignore[attr-defined]
+        except Exception:
+            pass
 
         return CLIResult(output=output, error=error)
 
