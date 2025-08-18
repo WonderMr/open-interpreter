@@ -235,6 +235,22 @@ def terminal_interface(interpreter, message):
             except Exception:
                 pass
 
+        # Show initial request info when verbose
+        if interpreter.verbose and not interpreter.plain_text_display and status_text is not None:
+            try:
+                req_info = []
+                if hasattr(interpreter, "llm"):
+                    if getattr(interpreter.llm, "model", None):
+                        req_info.append(f"model={interpreter.llm.model}")
+                    if getattr(interpreter.llm, "temperature", None) is not None:
+                        req_info.append(f"temp={interpreter.llm.temperature}")
+                    if getattr(interpreter.llm, "max_tokens", None) is not None:
+                        req_info.append(f"max_tokens={interpreter.llm.max_tokens}")
+                layout["status"].update(Panel(Text("LLM request: " + ", ".join(req_info)), style="on #003300"))
+                live.refresh()  # type: ignore[union-attr]
+            except Exception:
+                pass
+
         spinner_thread = threading.Thread(target=_spinner, daemon=True)
         spinner_thread.start()
         got_first_chunk = False
@@ -308,8 +324,12 @@ def terminal_interface(interpreter, message):
                 if "recipient" in chunk and chunk["recipient"] != "user":
                     continue
 
-                if interpreter.verbose:
-                    print("Chunk in `terminal_interface`:", chunk)
+                if interpreter.verbose and not interpreter.plain_text_display and status_text is not None:
+                    try:
+                        layout["status"].update(Panel(Text(f"LLM chunk: {chunk.get('type')}"), style="on #222244"))
+                        live.refresh()  # type: ignore[union-attr]
+                    except Exception:
+                        pass
 
                 # Comply with PyAutoGUI fail-safe for OS mode
                 # so people can turn it off by moving their mouse to a corner
