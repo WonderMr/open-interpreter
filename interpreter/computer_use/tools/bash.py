@@ -7,6 +7,35 @@ from anthropic.types.beta import BetaToolBash20241022Param
 from .base import BaseAnthropicTool, CLIResult, ToolError, ToolResult
 
 
+def _read_timeout_from_env(default: float) -> float:
+    """Read timeout (seconds) from env variables if present.
+
+    Supports values like "300", "300s", "5m", "1h".
+    Precedence: OI_BASH_TIMEOUT > OI_SHELL_TIMEOUT.
+    """
+    import re
+
+    raw = os.getenv("OI_BASH_TIMEOUT") or os.getenv("OI_SHELL_TIMEOUT")
+    if not raw:
+        return default
+    raw = raw.strip().lower()
+    # Plain seconds
+    if raw.isdigit():
+        return float(raw)
+    m = re.match(r"^(\d+)(s|m|h)$", raw)
+    if not m:
+        return default
+    value, unit = m.groups()
+    value = float(value)
+    if unit == "s":
+        return value
+    if unit == "m":
+        return value * 60.0
+    if unit == "h":
+        return value * 3600.0
+    return default
+
+
 class _BashSession:
     """A session of a bash shell."""
 
@@ -21,6 +50,8 @@ class _BashSession:
     def __init__(self):
         self._started = False
         self._timed_out = False
+        # Allow override via env: OI_BASH_TIMEOUT / OI_SHELL_TIMEOUT
+        self._timeout = _read_timeout_from_env(self._timeout)
 
     async def start(self):
         if self._started:
@@ -94,7 +125,7 @@ class _BashSession:
                 data = await self._process.stdout.readuntil(
                     self._sentinel.encode()
                 )
-                output = data.decode().split(self._sentinel, 1)[0]
+                output = data.decode(errors="replace").split(self._sentinel, 1)[0]
         except asyncio.TimeoutError:
             self._timed_out = True
             raise ToolError(
@@ -108,7 +139,7 @@ class _BashSession:
         error = ""
         try:
             stderr_buf = self._process.stderr._buffer  # pyright: ignore[reportAttributeAccessIssue]
-            error = stderr_buf.decode()
+            error = stderr_buf.decode(errors="replace")
             if error.endswith("\n"):
                 error = error[:-1]
             # clear the buffers so that the next output can be read correctly
