@@ -846,9 +846,9 @@ Notes for using the `str_replace` command:
                                     raise
                             # Adapt to litellm-like streaming interface for the main loop below
                             class _Delta:
-                                def __init__(self, content=None):
+                                def __init__(self, content=None, tool_calls=None):
                                     self.content = content
-                                    self.tool_calls = None
+                                    self.tool_calls = tool_calls
 
                             class _Choice:
                                 def __init__(self, delta, finish_reason=None):
@@ -859,11 +859,37 @@ Notes for using the `str_replace` command:
                                 def __init__(self, choice):
                                     self.choices = [choice]
 
+                            class _TCFunction:
+                                def __init__(self, name=None, arguments=None):
+                                    self.name = name
+                                    self.arguments = arguments
+
+                            class _TCDelta:
+                                def __init__(self, id=None, function=None):
+                                    self.id = id
+                                    self.function = function
+
                             def _stream_map():
                                 for c in response:
                                     content = getattr(c.choices[0].delta, "content", None)
                                     finish_reason = getattr(c.choices[0], "finish_reason", None)
-                                    yield _Chunk(_Choice(_Delta(content), finish_reason))
+                                    tool_calls_wrapped = None
+                                    tcs = getattr(c.choices[0].delta, "tool_calls", None)
+                                    if tcs:
+                                        tool_calls_wrapped = []
+                                        for tc in tcs:
+                                            fn = getattr(tc, "function", None)
+                                            func = _TCFunction(
+                                                name=getattr(fn, "name", None),
+                                                arguments=getattr(fn, "arguments", None),
+                                            ) if fn is not None else None
+                                            tool_calls_wrapped.append(
+                                                _TCDelta(
+                                                    id=getattr(tc, "id", None),
+                                                    function=func,
+                                                )
+                                            )
+                                    yield _Chunk(_Choice(_Delta(content, tool_calls_wrapped), finish_reason))
 
                             raw_response = _stream_map()
                         else:
