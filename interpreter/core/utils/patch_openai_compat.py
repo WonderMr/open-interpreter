@@ -57,4 +57,28 @@ def patch_openai_response_text_config() -> None:
 
 def patch_openai() -> None:
     patch_openai_response_text_config()
+    try:
+        # Newer litellm expects ResponseTextConfigParam from response_create_params
+        module_name = "openai.types.responses.response_create_params"
+        resp_params_module = None
+        try:
+            resp_params_module = importlib.import_module(module_name)
+        except Exception:
+            resp_params_module = None
+
+        if resp_params_module is not None and not hasattr(
+            resp_params_module, "ResponseTextConfigParam"
+        ):
+            class ResponseTextConfigParam:  # type: ignore
+                """Compatibility stub for older openai versions."""
+
+                def __init__(self, *args: Any, **kwargs: Any) -> None:  # noqa: D401
+                    # Accept any kwargs; store for potential debugging
+                    for k, v in kwargs.items():
+                        setattr(self, k, v)
+
+            setattr(resp_params_module, "ResponseTextConfigParam", ResponseTextConfigParam)
+            sys.modules[module_name] = resp_params_module
+    except Exception:
+        pass
 
