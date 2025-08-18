@@ -103,7 +103,13 @@ def terminal_interface(interpreter, message):
         )
         status_text = Text("", style="bold white on dark_green")
         layout["status"].update(Panel(status_text, style="on #003300"))
-        live = Live(layout, console=console, auto_refresh=False, refresh_per_second=30)
+        live = Live(
+            layout,
+            console=console,
+            auto_refresh=False,
+            refresh_per_second=30,
+            vertical_overflow="visible",
+        )
         live.start()
 
         def update_output(cursor: bool = True):
