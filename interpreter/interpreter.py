@@ -50,6 +50,26 @@ def _get_litellm():
     _litellm.modify_params = True
     _litellm_cached = _litellm
     return _litellm
+
+
+def _openai_client(api_key: str | None, api_base: str | None):
+    """Lazily construct an OpenAI client using the modern SDK.
+
+    Falls back with a clear error if the OpenAI SDK is missing.
+    """
+    try:
+        from openai import OpenAI
+    except Exception as import_error:
+        raise ImportError(
+            "Failed to import 'openai'. Please install a compatible version (e.g., pip install -U 'openai>=1.63,<2')."
+        ) from import_error
+
+    client_kwargs: dict[str, object] = {}
+    if api_key:
+        client_kwargs["api_key"] = api_key
+    if api_base:
+        client_kwargs["base_url"] = api_base
+    return OpenAI(**client_kwargs)
 # litellm.drop_params = True
 
 from anthropic import Anthropic
@@ -307,7 +327,8 @@ class Interpreter:
             except Exception:
                 # Fallback values if model info unavailable
                 if provider is None:
-                    provider = "openai"
+                    # Prefer openai for gpt-* models
+                    provider = "openai" if self.model.startswith("gpt-") else "openai"
                 if max_tokens is None:
                     max_tokens = 4000
 
@@ -780,10 +801,85 @@ Notes for using the `str_replace` command:
                 try:
                     litellm = _get_litellm()
                     raw_response = litellm.completion(**params)
-                except ImportError as e:
-                    self._spinner.stop()
-                    print("\nDependency error: " + str(e) + "\n")
-                    return
+                except ImportError:
+                    # Fallback: call OpenAI Chat Completions API directly for OpenAI models
+                    if provider == "openai":
+                        stream = params.get("stream", True)
+                        client = _openai_client(self.api_key, api_base)
+                        # Extract OpenAI-friendly payload
+                        model = params["model"]
+                        messages = params["messages"]
+                        temperature = params.get("temperature", 0)
+                        tools_param = params.get("tools")
+
+                        # Prepare tool definitions for OpenAI (function calling)
+                        tool_defs = None
+                        if tools_param:
+                            tool_defs = []
+                            for t in tools_param:
+                                if t.get("type") == "function":
+                                    tool_defs.append({
+                                        "type": "function",
+                                        "function": t["function"],
+                                    })
+
+                        if stream:
+                            response = client.chat.completions.create(
+                                model=model,
+                                messages=messages,
+                                temperature=temperature,
+                                tools=tool_defs,
+                                stream=True,
+                            )
+                            # Adapt to litellm-like streaming interface
+                            class _Delta:
+                                def __init__(self, content=None):
+                                    self.content = content
+                                    self.tool_calls = None
+
+                            class _Choice:
+                                def __init__(self, delta):
+                                    self.delta = delta
+
+                            class _Chunk:
+                                def __init__(self, content):
+                                    self.choices = [_Choice(_Delta(content))]
+
+                            first_token = True
+                            for chunk in response:
+                                yield _Chunk(getattr(chunk.choices[0].delta, "content", None))
+                                if first_token:
+                                    self._spinner.stop()
+                                    first_token = False
+                        else:
+                            response = client.chat.completions.create(
+                                model=model,
+                                messages=messages,
+                                temperature=temperature,
+                                tools=tool_defs,
+                                stream=False,
+                            )
+                            # Normalize to iterable of one with .choices[0].delta
+                            class _DeltaObj:
+                                def __init__(self, message):
+                                    self.content = message.content
+                                    self.tool_calls = getattr(message, "tool_calls", None)
+
+                            class _ChoiceObj:
+                                def __init__(self, message):
+                                    self.delta = _DeltaObj(message)
+
+                            class _RespObj:
+                                def __init__(self, message):
+                                    self.choices = [_ChoiceObj(message)]
+
+                            raw_response = [_RespObj(response.choices[0].message)]
+                    else:
+                        self._spinner.stop()
+                        print(
+                            "\nDependency error: Failed to import 'litellm' and provider is not OpenAI for direct fallback.\n"
+                        )
+                        return
 
                 if not stream:
                     raw_response.choices[0].delta = raw_response.choices[0].message
