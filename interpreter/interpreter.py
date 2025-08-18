@@ -285,6 +285,83 @@ class Interpreter:
 
         tool_collection = ToolCollection(*tools)
 
+        # Preflight: resolve any outstanding tool calls from prior assistant messages
+        # to avoid sending an assistant message with tool_calls that hasn't been
+        # followed by corresponding tool role messages (which causes OpenAI 400s).
+        if self.tool_calling:
+            def _find_unanswered_tool_calls(msgs: list[dict[str, Any]]):
+                """Return (assistant_index, list_of_tool_call_dicts) if any tool calls
+                in the last assistant message lack a following tool response."""
+                for idx in range(len(msgs) - 1, -1, -1):
+                    msg = msgs[idx]
+                    if msg.get("role") == "assistant" and msg.get("tool_calls"):
+                        unanswered: list[dict[str, Any]] = []
+                        for tc in cast(list[dict[str, Any]], msg["tool_calls"]):
+                            tc_id = tc.get("id")
+                            if not tc_id:
+                                continue
+                            found = False
+                            for j in range(idx + 1, len(msgs)):
+                                later = msgs[j]
+                                if later.get("role") == "tool" and later.get("tool_call_id") == tc_id:
+                                    found = True
+                                    break
+                            if not found:
+                                unanswered.append(tc)
+                        if unanswered:
+                            return idx, unanswered
+                        break
+                return None, []
+
+            _, outstanding_tool_calls = _find_unanswered_tool_calls(self.messages)
+            if outstanding_tool_calls:
+                if self.auto_run:
+                    user_approval = "y"
+                else:
+                    user_approval = input("\nRun tool(s)? (y/n): ").lower().strip()
+
+                user_content_to_add: list[dict[str, Any]] = []
+                for tc in outstanding_tool_calls:
+                    function = cast(dict[str, Any] | None, tc.get("function")) or {}
+                    tool_name = cast(str | None, function.get("name")) or ""
+                    arguments_raw = function.get("arguments")
+                    try:
+                        function_arguments = json.loads(arguments_raw) if isinstance(arguments_raw, str) else (arguments_raw or {})
+                    except Exception:
+                        function_arguments = {}
+
+                    if user_approval == "y":
+                        result = await tool_collection.run(
+                            name=tool_name,
+                            tool_input=cast(dict[str, Any], function_arguments),
+                        )
+                    else:
+                        result = ToolResult(output="Tool execution cancelled by user")
+
+                    output = result.error if result.error else result.output
+                    tool_output = output or ""
+                    if result.base64_image:
+                        tool_output += "\nThe user will reply with the tool's image output."
+                        user_content_to_add.append(
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": f"data:image/png;base64,{result.base64_image}"},
+                            }
+                        )
+                    if tool_output == "":
+                        tool_output = "No output from tool."
+
+                    self.messages.append(
+                        {
+                            "role": "tool",
+                            "content": tool_output.strip(),
+                            "tool_call_id": tc.get("id"),
+                        }
+                    )
+
+                if user_content_to_add:
+                    self.messages.append({"role": "user", "content": user_content_to_add})
+
         # Get provider and max_tokens, with fallbacks
         provider = self.provider  # Keep existing provider if set
         max_tokens = self.max_tokens  # Keep existing max_tokens if set
