@@ -293,12 +293,27 @@ Continuing...
         if self.api_version:
             params["api_version"] = self.api_version
         if self.max_tokens:
-            # Use max_completion_tokens for OpenAI o1 models, max_tokens for others
+            # Use max_completion_tokens for known OpenAI models that require it, 
+            # but fallback logic in fixed_litellm_completions will handle other cases
             model_lower = self.model.lower() if self.model else ""
-            if ("o1-preview" in model_lower or "o1-mini" in model_lower or 
-                model_lower.startswith("o1") or "/o1" in model_lower):
+            
+            # Check if this is a known OpenAI model that requires max_completion_tokens
+            openai_models_requiring_max_completion_tokens = [
+                "o1-preview", "o1-mini", "o1", "o3"
+            ]
+            
+            uses_max_completion_tokens = False
+            for model_name in openai_models_requiring_max_completion_tokens:
+                if (model_name in model_lower or 
+                    model_lower.startswith(model_name) or 
+                    f"/{model_name}" in model_lower):
+                    uses_max_completion_tokens = True
+                    break
+            
+            if uses_max_completion_tokens:
                 params["max_completion_tokens"] = self.max_tokens
             else:
+                # Default to max_tokens, but the error handling will switch if needed
                 params["max_tokens"] = self.max_tokens
         if self.temperature:
             params["temperature"] = self.temperature
@@ -455,6 +470,19 @@ def fixed_litellm_completions(**params):
             if attempt == 0:
                 # Store the first error
                 first_error = e
+            
+            # Handle the max_tokens vs max_completion_tokens error
+            if (hasattr(e, 'message') and "max_tokens" in str(e) and "max_completion_tokens" in str(e)) or \
+               ("max_tokens" in str(e) and "max_completion_tokens" in str(e)):
+                if "max_tokens" in params and "max_completion_tokens" not in params:
+                    # Switch from max_tokens to max_completion_tokens
+                    params["max_completion_tokens"] = params.pop("max_tokens")
+                    continue  # Retry immediately with the corrected parameter
+                elif "max_completion_tokens" in params and "max_tokens" not in params:
+                    # Switch from max_completion_tokens to max_tokens
+                    params["max_tokens"] = params.pop("max_completion_tokens")
+                    continue  # Retry immediately with the corrected parameter
+            
             if (
                 isinstance(e, litellm.exceptions.AuthenticationError)
                 and "api_key" not in params
