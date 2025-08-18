@@ -208,6 +208,29 @@ def terminal_interface(interpreter, message):
             except Exception:
                 pass
 
+        # Processing spinner (between code completion and next output)
+        proc_spinner_stop_event = None
+        proc_spinner_thread = None
+        proc_spinner_running = False
+
+        def _proc_spinner():
+            frames = "|/-\\"
+            label = "Processing response "
+            i = 0
+            while proc_spinner_stop_event and not proc_spinner_stop_event.is_set():
+                try:
+                    sys.stdout.write("\r" + label + frames[i % len(frames)])
+                    sys.stdout.flush()
+                except Exception:
+                    pass
+                time.sleep(0.1)
+                i += 1
+            try:
+                sys.stdout.write("\r" + " " * (len(label) + 2) + "\r")
+                sys.stdout.flush()
+            except Exception:
+                pass
+
         try:
             for chunk in interpreter.chat(message, display=False, stream=True):
                 if not got_first_chunk:
@@ -370,6 +393,13 @@ def terminal_interface(interpreter, message):
                                 pass
                             exec_spinner_running = False
 
+                        # Start processing spinner while AI formats the answer
+                        if not interpreter.plain_text_display and not proc_spinner_running:
+                            proc_spinner_stop_event = threading.Event()
+                            proc_spinner_thread = threading.Thread(target=_proc_spinner, daemon=True)
+                            proc_spinner_thread.start()
+                            proc_spinner_running = True
+
                 # Assistant message blocks
                 if chunk["type"] == "message":
                     if "start" in chunk:
@@ -510,6 +540,14 @@ def terminal_interface(interpreter, message):
                         except Exception:
                             pass
                         exec_spinner_running = False
+                    # Stop processing spinner once output resumes
+                    if proc_spinner_running and proc_spinner_stop_event:
+                        proc_spinner_stop_event.set()
+                        try:
+                            proc_spinner_thread.join(timeout=0.2)  # type: ignore[arg-type]
+                        except Exception:
+                            pass
+                        proc_spinner_running = False
 
                     if "format" in chunk and chunk["format"] == "output":
                         active_block.output += "\n" + chunk["content"]
@@ -632,6 +670,12 @@ def terminal_interface(interpreter, message):
                         exec_spinner_thread.join(timeout=0.2)  # type: ignore[arg-type]
                     except Exception:
                         pass
+                if proc_spinner_running and proc_spinner_stop_event:
+                    proc_spinner_stop_event.set()
+                    try:
+                        proc_spinner_thread.join(timeout=0.2)  # type: ignore[arg-type]
+                    except Exception:
+                        pass
                 continue
             else:
                 break
@@ -649,5 +693,11 @@ def terminal_interface(interpreter, message):
                 exec_spinner_stop_event.set()
                 try:
                     exec_spinner_thread.join(timeout=0.2)  # type: ignore[arg-type]
+                except Exception:
+                    pass
+            if proc_spinner_running and proc_spinner_stop_event:
+                proc_spinner_stop_event.set()
+                try:
+                    proc_spinner_thread.join(timeout=0.2)  # type: ignore[arg-type]
                 except Exception:
                     pass
