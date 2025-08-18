@@ -36,11 +36,7 @@ def _get_litellm():
     try:
         import litellm as _litellm
     except Exception as import_error:
-        raise ImportError(
-            "Failed to import 'litellm'. This is usually caused by an incompatible 'openai' package version. "
-            "Please reinstall with compatible dependencies (e.g., pip install -U 'openai>=1.63,<2' 'litellm>=1.56,<2') "
-            "or install from the provided Git branch."
-        ) from import_error
+        raise ImportError("litellm is unavailable; using OpenAI client directly.") from import_error
 
         # Unreachable but keeps linters happy
         # return None  # type: ignore
@@ -60,9 +56,7 @@ def _openai_client(api_key: str | None, api_base: str | None):
     try:
         from openai import OpenAI
     except Exception as import_error:
-        raise ImportError(
-            "Failed to import 'openai'. Please install a compatible version (e.g., pip install -U 'openai>=1.63,<2')."
-        ) from import_error
+        raise ImportError("openai SDK is not installed.") from import_error
 
     client_kwargs: dict[str, object] = {}
     if api_key:

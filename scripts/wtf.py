@@ -87,10 +87,7 @@ def _get_litellm():
     try:
         import litellm as _litellm
     except Exception as import_error:
-        raise ImportError(
-            "Failed to import 'litellm' for the wtf tool. This is usually caused by an incompatible 'openai' package version. "
-            "Please reinstall with compatible dependencies (e.g., pip install -U 'openai>=1.63,<2' 'litellm>=1.56,<2')."
-        ) from import_error
+        raise ImportError("litellm is unavailable; using OpenAI client directly.") from import_error
     _litellm_cached = _litellm
     return _litellm
 
