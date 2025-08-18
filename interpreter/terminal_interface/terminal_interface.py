@@ -215,7 +215,7 @@ def terminal_interface(interpreter, message):
 
         def _proc_spinner():
             frames = "|/-\\"
-            label = "Processing response "
+            label = "Processing request "
             i = 0
             while proc_spinner_stop_event and not proc_spinner_stop_event.is_set():
                 try:
@@ -403,6 +403,14 @@ def terminal_interface(interpreter, message):
                 # Assistant message blocks
                 if chunk["type"] == "message":
                     if "start" in chunk:
+                        # Stop processing spinner when a new message begins
+                        if proc_spinner_running and proc_spinner_stop_event:
+                            proc_spinner_stop_event.set()
+                            try:
+                                proc_spinner_thread.join(timeout=0.2)  # type: ignore[arg-type]
+                            except Exception:
+                                pass
+                            proc_spinner_running = False
                         active_block = MessageBlock()
                         render_cursor = True
 
@@ -454,6 +462,14 @@ def terminal_interface(interpreter, message):
                 # Assistant code blocks
                 elif chunk["role"] == "assistant" and chunk["type"] == "code":
                     if "start" in chunk:
+                        # Stop processing spinner when a new code block starts
+                        if proc_spinner_running and proc_spinner_stop_event:
+                            proc_spinner_stop_event.set()
+                            try:
+                                proc_spinner_thread.join(timeout=0.2)  # type: ignore[arg-type]
+                            except Exception:
+                                pass
+                            proc_spinner_running = False
                         active_block = CodeBlock(interpreter)
                         active_block.language = chunk["format"]
                         render_cursor = True
@@ -472,6 +488,14 @@ def terminal_interface(interpreter, message):
                         or ("format" in chunk and chunk["format"] == "javascript")
                     )
                 ):
+                    # Stop processing spinner when computer output is displayed
+                    if proc_spinner_running and proc_spinner_stop_event:
+                        proc_spinner_stop_event.set()
+                        try:
+                            proc_spinner_thread.join(timeout=0.2)  # type: ignore[arg-type]
+                        except Exception:
+                            pass
+                        proc_spinner_running = False
                     if (interpreter.os == True) and (interpreter.verbose == False):
                         # We don't display things to the user in OS control mode, since we use vision to communicate the screen to the LLM so much.
                         # But if verbose is true, we do display it!
