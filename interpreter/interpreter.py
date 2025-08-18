@@ -272,8 +272,9 @@ class Interpreter:
         Agentic sampling loop for the assistant/tool interaction.
         Yields chunks and maintains message history on the interpreter instance.
         """
-        if user_input:
-            self.messages.append({"role": "user", "content": user_input})
+        # Note: we handle outstanding tool calls first, then append new user input
+        # so that any required tool responses come immediately after the assistant
+        # message that requested them (to satisfy API requirements).
 
         tools = []
         if "interpreter" in self.tools:
@@ -315,9 +316,12 @@ class Interpreter:
 
             _, outstanding_tool_calls = _find_unanswered_tool_calls(self.messages)
             if outstanding_tool_calls:
-                # Do not prompt here to avoid consuming user chat input.
-                # Auto-run if configured, otherwise mark as cancelled.
-                user_approval = "y" if self.auto_run else "n"
+                # If a new user input is present, cancel prior tool calls so the
+                # new input reaches the LLM immediately. Otherwise, auto-run if configured.
+                if user_input is not None:
+                    user_approval = "n"
+                else:
+                    user_approval = "y" if self.auto_run else "n"
 
                 user_content_to_add: list[dict[str, Any]] = []
                 for tc in outstanding_tool_calls:
@@ -335,7 +339,12 @@ class Interpreter:
                             tool_input=cast(dict[str, Any], function_arguments),
                         )
                     else:
-                        result = ToolResult(output="Tool execution cancelled by user")
+                        reason = (
+                            "Tool execution cancelled due to new user input"
+                            if user_input is not None
+                            else "Tool execution cancelled by user"
+                        )
+                        result = ToolResult(output=reason)
 
                     output = result.error if result.error else result.output
                     tool_output = output or ""
@@ -360,6 +369,10 @@ class Interpreter:
 
                 if user_content_to_add:
                     self.messages.append({"role": "user", "content": user_content_to_add})
+
+        # Now append the new user input (if any), after resolving outstanding tool calls
+        if user_input:
+            self.messages.append({"role": "user", "content": user_input})
 
         # Get provider and max_tokens, with fallbacks
         provider = self.provider  # Keep existing provider if set
