@@ -1356,7 +1356,9 @@ Notes for using the `str_replace` command:
                     print()
                     return self.messages[original_message_length:]
 
-                message_count += 1  # Increment counter after each message
+                # Ignore empty inputs silently
+                if user_input.strip() == "":
+                    continue
 
                 if user_input.startswith("/"):
                     parts = user_input.split(maxsplit=2)
@@ -1364,12 +1366,7 @@ Notes for using the `str_replace` command:
                     if self._handle_command(cmd, parts):
                         continue
 
-                if user_input == "":
-                    if message_count in range(8, 11):
-                        print("Error: Cat is asleep on Enter key\n")
-                    else:
-                        print("Error: No input provided\n")
-                    continue
+                message_count += 1  # Increment counter after each non-empty message
 
                 try:
                     print()
