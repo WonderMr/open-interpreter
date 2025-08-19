@@ -1188,6 +1188,7 @@ Notes for using the `str_replace` command:
 
                 message = None
                 first_token = True
+                streamed_tool_calls_seen = False
 
                 for chunk in raw_response:
                     yield chunk
@@ -1212,6 +1213,7 @@ Notes for using the `str_replace` command:
                             message.content += chunk.choices[0].delta.content
 
                     if chunk.choices[0].delta.tool_calls:
+                        streamed_tool_calls_seen = True
                         for tc_delta in chunk.choices[0].delta.tool_calls:
                             # Ensure message.tool_calls exists
                             if message.tool_calls is None:
@@ -1313,7 +1315,23 @@ Notes for using the `str_replace` command:
                 for tool_call in message.tool_calls:
                     function_arguments = json.loads(tool_call.function.arguments)
 
-                    # Rendering of the tool call is already handled during streaming of tool_calls above
+                    # If no streamed tool_calls were seen, render a preview block before execution
+                    if not streamed_tool_calls_seen:
+                        try:
+                            preview_renderer = ToolRenderer()
+                            preview_renderer.name = getattr(tool_call.function, "name", None)
+                            if isinstance(function_arguments, dict):
+                                import json as _json
+                                preview_payload = {}
+                                if "command" in function_arguments:
+                                    preview_payload["command"] = function_arguments["command"]
+                                if "file_text" in function_arguments:
+                                    preview_payload["file_text"] = function_arguments["file_text"]
+                                if preview_payload:
+                                    preview_renderer.feed(_json.dumps(preview_payload))
+                            preview_renderer.close()
+                        except Exception:
+                            pass
 
                     if user_approval == "y":
                         try:
