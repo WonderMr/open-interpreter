@@ -575,6 +575,8 @@ class Interpreter:
 
                 # If there are no tool use blocks, we're done
                 if not tool_use_blocks:
+                    # End of assistant's turn; print user-request separator
+                    print(_terminal_rule("="))
                     break
 
                 user_approval = None
@@ -1224,6 +1226,8 @@ Notes for using the `str_replace` command:
                 print()
 
                 if not message.tool_calls:
+                    # End of assistant's turn; print user-request separator
+                    print(_terminal_rule("="))
                     break
 
                 if self.auto_run:
