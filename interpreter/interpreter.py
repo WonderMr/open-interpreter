@@ -126,9 +126,9 @@ except Exception:
                     return
                 if not isinstance(data, dict):
                     return
-                # Wait until we know the tool name to render the header
+                # Infer tool name if missing
                 if self.name is None:
-                    return
+                    self.name = "bash" if isinstance(data.get("command"), str) else "tool"
                 self._open_block()
                 if isinstance(data.get("command"), str):
                     self._render_code(data["command"].rstrip())
