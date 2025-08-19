@@ -91,42 +91,24 @@ except Exception:
     import shutil, json as _json, sys as _sys
 
     class ToolRenderer:  # type: ignore
-        ICONS = {
-            "bash": "▶",
-            "str_replace_editor": "✦",
-            "computer": "●",
-        }
-
         def __init__(self, name=None):
             self.name = name
             self._buffer = ""
             self._opened = False
             self._line_no = 1
 
-        def _width(self) -> int:
+        def _rule(self, char="─"):
             try:
                 w = shutil.get_terminal_size().columns
             except Exception:
                 w = 80
-            return max(w, 50)
-
-        def _print_sep(self, kind: str):
-            # kind in {"top","mid","bot"}
-            w = self._width()
-            left = "────"
-            mid_char = {"top": "┬", "mid": "┼", "bot": "┴"}[kind]
-            _sys.stdout.write(left + mid_char + "─" * (w - len(left) - 1) + "\n")
+            return max(w, 50) * char
 
         def _open_block(self):
-            if self._opened:
+            if self._opened or self.name is None:
                 return
-            _sys.stdout.write("\n")
-            self._print_sep("top")
-            icon = self.ICONS.get(self.name or "", "•")
-            title = self.name or "tool"
-            # Header line: icon and tool name with left gutter
-            _sys.stdout.write(f"  {icon} │ {title} \n")
-            self._print_sep("mid")
+            _sys.stdout.write("\n" + self._rule("─") + "\n")
+            _sys.stdout.write(f"[ {self.name} ]\n")
             self._opened = True
 
         def _render_code(self, text: str):
@@ -144,6 +126,9 @@ except Exception:
                     return
                 if not isinstance(data, dict):
                     return
+                # Wait until we know the tool name to render the header
+                if self.name is None:
+                    return
                 self._open_block()
                 if isinstance(data.get("command"), str):
                     self._render_code(data["command"].rstrip())
@@ -159,8 +144,7 @@ except Exception:
 
         def close(self):
             if self._opened:
-                self._print_sep("bot")
-                _sys.stdout.write("")
+                _sys.stdout.write(self._rule("─") + "\n\n")
                 _sys.stdout.flush()
 
 COMPUTER_USE_BETA_FLAG = "computer-use-2024-10-22"
