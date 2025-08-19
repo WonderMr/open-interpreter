@@ -912,7 +912,7 @@ Notes for using the `str_replace` command:
                     tools_param = params.get("tools")
                     # If we've seen multiple consecutive tool-only replies, force a textual reply
                     tool_choice_arg = (
-                        "none" if (self.tool_calling and self._consecutive_tool_only_responses >= 2) else None
+                        "none" if (self.tool_calling and self._consecutive_tool_only_responses >= 3) else None
                     )
 
                     # Prepare tool definitions for OpenAI (function calling)
