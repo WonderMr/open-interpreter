@@ -106,7 +106,7 @@ except Exception:
             return char * width
 
         def _print_header(self):
-            if self._printed_header:
+            if self._printed_header or self.name is None:
                 return
             _sys.stdout.write("\n" + self._rule("─") + "\n")
             title = f"{self.name or 'tool'}"
@@ -116,7 +116,6 @@ except Exception:
 
         def feed(self, chunk):
             try:
-                self._print_header()
                 # Accumulate and try to parse full JSON payloads
                 self._buffer += chunk
                 data = None
@@ -127,6 +126,8 @@ except Exception:
                     return
 
                 if isinstance(data, dict):
+                    # Print header once we know tool name
+                    self._print_header()
                     # Print meaningful fields as a simple code block
                     if "command" in data and isinstance(data["command"], str):
                         _sys.stdout.write(data["command"].rstrip() + "\n")
