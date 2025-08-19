@@ -330,11 +330,14 @@ class Interpreter:
             _, outstanding_tool_calls = _find_unanswered_tool_calls(self.messages)
             if outstanding_tool_calls:
                 # If a new user input is present, cancel prior tool calls so the
-                # new input reaches the LLM immediately. Otherwise, auto-run if configured.
+                # new input reaches the LLM immediately. Otherwise, respect auto_run/interactive flags.
                 if user_input is not None:
                     user_approval = "n"
                 else:
-                    user_approval = "y" if self.auto_run else "n"
+                    if self.auto_run:
+                        user_approval = "y"
+                    else:
+                        user_approval = "n" if not self.interactive else self._ask_user_approval()
 
                 user_content_to_add: list[dict[str, Any]] = []
                 for tc in outstanding_tool_calls:
