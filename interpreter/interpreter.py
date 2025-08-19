@@ -1312,29 +1312,7 @@ Notes for using the `str_replace` command:
                 for tool_call in message.tool_calls:
                     function_arguments = json.loads(tool_call.function.arguments)
 
-                    # Fallback: render the tool call in the special code window before execution
-                    try:
-                        preview_renderer = ToolRenderer()
-                        preview_renderer.name = getattr(tool_call.function, "name", None)
-                        if isinstance(function_arguments, dict):
-                            import json as _json
-                            # Only include keys relevant to renderers
-                            preview_payload = {}
-                            if "command" in function_arguments:
-                                preview_payload["command"] = function_arguments["command"]
-                            if "path" in function_arguments:
-                                preview_payload["path"] = function_arguments["path"]
-                            if "file_text" in function_arguments:
-                                preview_payload["file_text"] = function_arguments["file_text"]
-                            if "old_str" in function_arguments:
-                                preview_payload["old_str"] = function_arguments["old_str"]
-                            if "new_str" in function_arguments:
-                                preview_payload["new_str"] = function_arguments["new_str"]
-                            if preview_payload:
-                                preview_renderer.feed(_json.dumps(preview_payload))
-                                preview_renderer.close()
-                    except Exception:
-                        pass
+                    # Rendering of the tool call is already handled during streaming of tool_calls above
 
                     if user_approval == "y":
                         try:
