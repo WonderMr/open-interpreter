@@ -895,7 +895,7 @@ Notes for using the `str_replace` command:
                     tools_param = params.get("tools")
                     # If we've seen multiple consecutive tool-only replies, force a textual reply
                     tool_choice_arg = (
-                        "none" if (self.tool_calling and self._consecutive_tool_only_responses >= 2) else None
+                        "none" if (self.tool_calling and self._consecutive_tool_only_responses >= 1) else None
                     )
 
                     # Prepare tool definitions for OpenAI (function calling)
@@ -1199,6 +1199,12 @@ Notes for using the `str_replace` command:
                     else:
                         # No tool calls; reset the counter
                         self._consecutive_tool_only_responses = 0
+                        # If content is empty, provide a minimal fallback so UI isn't blank
+                        if not (assistant_message["content"] or "").strip():
+                            fallback_text = "Done."
+                            md.feed(fallback_text + "\n")
+                            await asyncio.sleep(0)
+                            assistant_message["content"] = fallback_text
                     self.messages.append(assistant_message)
 
                 print()
