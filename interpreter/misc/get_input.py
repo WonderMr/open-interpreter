@@ -5,14 +5,20 @@ from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.history import InMemoryHistory
 from prompt_toolkit.key_binding import KeyBindings
 
+_placeholder_shown = False
+
 
 async def async_get_input(
     placeholder_text: Optional[str] = None,
     placeholder_color: str = "gray",
     multiline_support: bool = True,
 ) -> str:
-    # placeholder_text = "Describe command"
-    placeholder_text = 'Use """ for multi-line input'
+    # Show placeholder only once per session to avoid duplicate lines
+    global _placeholder_shown
+    effective_placeholder = None
+    if not _placeholder_shown:
+        effective_placeholder = 'Use """ for multi-line input'
+        _placeholder_shown = True
     history = InMemoryHistory()
     session = PromptSession(
         history=history,
@@ -47,8 +53,8 @@ async def async_get_input(
 
     result = await session.prompt_async(
         "> ",
-        placeholder=HTML(f'<style fg="{placeholder_color}">{placeholder_text}</style>')
-        if placeholder_text
+        placeholder=HTML(f'<style fg="{placeholder_color}">{effective_placeholder}</style>')
+        if effective_placeholder
         else None,
         key_bindings=kb,
         complete_while_typing=False,
