@@ -91,24 +91,39 @@ except Exception:
     import shutil, json as _json, sys as _sys
 
     class ToolRenderer:  # type: ignore
+        ICONS = {
+            "bash": "▶",
+            "str_replace_editor": "✦",
+            "computer": "●",
+        }
+
         def __init__(self, name=None):
             self.name = name
             self._buffer = ""
             self._opened = False
             self._line_no = 1
 
-        def _rule(self, char="─"):
+        def _term_width(self) -> int:
             try:
-                w = shutil.get_terminal_size().columns
+                return max(shutil.get_terminal_size().columns, 50)
             except Exception:
-                w = 80
-            return max(w, 50) * char
+                return 80
+
+        def _print_sep(self, kind: str):
+            # kind in {"top","mid","bot"}
+            w = self._term_width()
+            left = "────"
+            mid_char = {"top": "┬", "mid": "┼", "bot": "┴"}[kind]
+            _sys.stdout.write(left + mid_char + "─" * (w - len(left) - 1) + "\n")
 
         def _open_block(self):
             if self._opened or self.name is None:
                 return
-            _sys.stdout.write("\n" + self._rule("─") + "\n")
-            _sys.stdout.write(f"[ {self.name} ]\n")
+            _sys.stdout.write("\n")
+            self._print_sep("top")
+            icon = self.ICONS.get(self.name or "", "•")
+            _sys.stdout.write(f"  {icon} │ {self.name} \n")
+            self._print_sep("mid")
             self._opened = True
 
         def _render_code(self, text: str):
@@ -144,7 +159,8 @@ except Exception:
 
         def close(self):
             if self._opened:
-                _sys.stdout.write(self._rule("─") + "\n\n")
+                self._print_sep("bot")
+                _sys.stdout.write("\n")
                 _sys.stdout.flush()
 
 COMPUTER_USE_BETA_FLAG = "computer-use-2024-10-22"
