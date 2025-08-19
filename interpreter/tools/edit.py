@@ -50,7 +50,10 @@ class EditTool(BaseAnthropicTool):
         insert_line: int | None = None,
         **kwargs,
     ):
+        # Normalize path: allow relative paths by resolving against current working directory
         _path = Path(path)
+        if not _path.is_absolute():
+            _path = (Path.cwd() / _path).resolve()
         self.validate_path(command, _path)
         if command == "view":
             return await self.view(_path, view_range)
