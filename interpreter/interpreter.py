@@ -458,7 +458,8 @@ class Interpreter:
 
             betas = [COMPUTER_USE_BETA_FLAG]
 
-            edit = ToolRenderer()
+            # Maintain separate renderers per tool_call id to support multiple simultaneous tool calls
+            active_edit_renderers: dict[str, ToolRenderer] = {}
 
             if (
                 provider == "anthropic" and not self.serve
@@ -1150,16 +1151,23 @@ Notes for using the `str_replace` command:
                             if message.tool_calls is None:
                                 message.tool_calls = []
 
-                            # Register new tool call ids
-                            if getattr(tc_delta, "id", None):
-                                if tc_delta.id not in [t.id for t in message.tool_calls]:
-                                    edit.close()
-                                    edit = ToolRenderer()
+                            # Register new tool call ids and create renderer
+                            tc_id = getattr(tc_delta, "id", None)
+                            if tc_id:
+                                if tc_id not in [t.id for t in message.tool_calls]:
                                     message.tool_calls.append(tc_delta)
+                                if tc_id not in active_edit_renderers:
+                                    active_edit_renderers[tc_id] = ToolRenderer()
+                                renderer = active_edit_renderers[tc_id]
+                            else:
+                                # Fallback renderer for missing ids
+                                if "__fallback__" not in active_edit_renderers:
+                                    active_edit_renderers["__fallback__"] = ToolRenderer()
+                                renderer = active_edit_renderers["__fallback__"]
 
                             # Locate current tool call by id (fallback to last)
-                            if getattr(tc_delta, "id", None):
-                                matches = [t for t in message.tool_calls if t.id == tc_delta.id]
+                            if tc_id:
+                                matches = [t for t in message.tool_calls if t.id == tc_id]
                                 current_tool_call = matches[0] if matches else message.tool_calls[-1]
                             else:
                                 current_tool_call = message.tool_calls[-1]
@@ -1167,21 +1175,23 @@ Notes for using the `str_replace` command:
                             # Update function name
                             if getattr(getattr(tc_delta, "function", None), "name", None):
                                 tool_name = tc_delta.function.name
-                                if edit.name is None:
-                                    edit.name = tool_name
+                                if renderer.name is None:
+                                    renderer.name = tool_name
                                 if getattr(current_tool_call, "function", None) and getattr(current_tool_call.function, "name", None) is None:
                                     current_tool_call.function.name = tool_name
 
                             # Update arguments stream
                             if getattr(getattr(tc_delta, "function", None), "arguments", None):
                                 arguments_delta = tc_delta.function.arguments
-                                edit.feed(arguments_delta)
+                                renderer.feed(arguments_delta)
                                 if chunk.choices[0].delta != message:
                                     current_tool_call.function.arguments += arguments_delta
 
                     if chunk.choices[0].finish_reason:
-                        edit.close()
-                        edit = ToolRenderer()
+                        # Close all active renderers at the end of the assistant turn
+                        for _rid, _renderer in list(active_edit_renderers.items()):
+                            _renderer.close()
+                        active_edit_renderers.clear()
 
                 if self.tool_calling:
                     assistant_message = {
