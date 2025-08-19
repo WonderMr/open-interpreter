@@ -84,13 +84,101 @@ from .misc.spinner import SimpleSpinner
 from .profiles import Profile
 from .tools import BashTool, ComputerTool, EditTool, ToolCollection, ToolResult
 from .ui.markdown import MarkdownRenderer
-from .ui.tool import ToolRenderer
+try:
+    from .ui.tool import ToolRenderer
+except Exception:
+    # Fallback renderer that prints minimal code blocks when UI module is unavailable
+    import shutil, json as _json, sys as _sys
+
+    class ToolRenderer:  # type: ignore
+        ICONS = {
+            "bash": "▶",
+            "str_replace_editor": "✦",
+            "computer": "●",
+        }
+
+        def __init__(self, name=None):
+            self.name = name
+            self._buffer = ""
+            self._opened = False
+            self._line_no = 1
+
+        def _term_width(self) -> int:
+            try:
+                return max(shutil.get_terminal_size().columns, 50)
+            except Exception:
+                return 80
+
+        def _print_sep(self, kind: str):
+            # kind in {"top","mid","bot"}
+            w = self._term_width()
+            left = "────"
+            mid_char = {"top": "┬", "mid": "┼", "bot": "┴"}[kind]
+            _sys.stdout.write(left + mid_char + "─" * (w - len(left) - 1) + "\n")
+
+        def _open_block(self):
+            if self._opened or self.name is None:
+                return
+            _sys.stdout.write("\n")
+            self._print_sep("top")
+            icon = self.ICONS.get(self.name or "", "•")
+            _sys.stdout.write(f"  {icon} │ {self.name} \n")
+            self._print_sep("mid")
+            self._opened = True
+
+        def _render_code(self, text: str):
+            # Numbered code lines with left gutter
+            for line in text.splitlines():
+                _sys.stdout.write(f"{str(self._line_no).rjust(3)} │ {line}\n")
+                self._line_no += 1
+
+        def feed(self, chunk):
+            try:
+                self._buffer += chunk
+                try:
+                    data = _json.loads(self._buffer)
+                except Exception:
+                    return
+                if not isinstance(data, dict):
+                    return
+                # Infer tool name if missing
+                if self.name is None:
+                    self.name = "bash" if isinstance(data.get("command"), str) else "tool"
+                self._open_block()
+                if isinstance(data.get("command"), str):
+                    self._render_code(data["command"].rstrip())
+                elif isinstance(data.get("file_text"), str):
+                    self._render_code(data["file_text"].rstrip())
+                else:
+                    # Fallback: print compact JSON
+                    self._render_code(self._buffer.rstrip())
+                self._buffer = ""
+                _sys.stdout.flush()
+            except Exception:
+                pass
+
+        def close(self):
+            if self._opened:
+                self._print_sep("bot")
+                _sys.stdout.write("\n")
+                _sys.stdout.flush()
 
 COMPUTER_USE_BETA_FLAG = "computer-use-2024-10-22"
 PROMPT_CACHING_BETA_FLAG = "prompt-caching-2024-07-31"
 
 # Initialize markdown renderer
 md = MarkdownRenderer()
+
+# Terminal separator helper
+def _terminal_rule(char: str) -> str:
+    try:
+        import shutil
+        width = shutil.get_terminal_size(fallback=(80, 24)).columns
+    except Exception:
+        width = 80
+    if width <= 0:
+        width = 80
+    return char * width
 
 
 # Helper function used in async_respond()
@@ -182,6 +270,9 @@ class Interpreter:
         self._spinner = SimpleSpinner("")
         self._command_handler = CommandHandler(self)
         self._stop_flag = False  # Add stop flag
+        # Track consecutive assistant turns that contain only tool calls and no content
+        self._consecutive_tool_only_responses = 0
+        self._chat_running = False
 
     def to_dict(self):
         """Convert current settings to dictionary"""
@@ -272,8 +363,9 @@ class Interpreter:
         Agentic sampling loop for the assistant/tool interaction.
         Yields chunks and maintains message history on the interpreter instance.
         """
-        if user_input:
-            self.messages.append({"role": "user", "content": user_input})
+        # Note: we handle outstanding tool calls first, then append new user input
+        # so that any required tool responses come immediately after the assistant
+        # message that requested them (to satisfy API requirements).
 
         tools = []
         if "interpreter" in self.tools:
@@ -284,6 +376,97 @@ class Interpreter:
             tools.append(ComputerTool())
 
         tool_collection = ToolCollection(*tools)
+
+        # Preflight: resolve any outstanding tool calls from prior assistant messages
+        # to avoid sending an assistant message with tool_calls that hasn't been
+        # followed by corresponding tool role messages (which causes OpenAI 400s).
+        if self.tool_calling:
+            def _find_unanswered_tool_calls(msgs: list[dict[str, Any]]):
+                """Return (assistant_index, list_of_tool_call_dicts) if any tool calls
+                in the last assistant message lack a following tool response."""
+                for idx in range(len(msgs) - 1, -1, -1):
+                    msg = msgs[idx]
+                    if msg.get("role") == "assistant" and msg.get("tool_calls"):
+                        unanswered: list[dict[str, Any]] = []
+                        for tc in cast(list[dict[str, Any]], msg["tool_calls"]):
+                            tc_id = tc.get("id")
+                            if not tc_id:
+                                continue
+                            found = False
+                            for j in range(idx + 1, len(msgs)):
+                                later = msgs[j]
+                                if later.get("role") == "tool" and later.get("tool_call_id") == tc_id:
+                                    found = True
+                                    break
+                            if not found:
+                                unanswered.append(tc)
+                        if unanswered:
+                            return idx, unanswered
+                        break
+                return None, []
+
+            _, outstanding_tool_calls = _find_unanswered_tool_calls(self.messages)
+            if outstanding_tool_calls:
+                # If a new user input is present, cancel prior tool calls so the
+                # new input reaches the LLM immediately. Otherwise, respect auto_run/interactive flags.
+                if user_input is not None:
+                    user_approval = "n"
+                else:
+                    if self.auto_run:
+                        user_approval = "y"
+                    else:
+                        user_approval = "n" if not self.interactive else self._ask_user_approval()
+
+                user_content_to_add: list[dict[str, Any]] = []
+                for tc in outstanding_tool_calls:
+                    function = cast(dict[str, Any] | None, tc.get("function")) or {}
+                    tool_name = cast(str | None, function.get("name")) or ""
+                    arguments_raw = function.get("arguments")
+                    try:
+                        function_arguments = json.loads(arguments_raw) if isinstance(arguments_raw, str) else (arguments_raw or {})
+                    except Exception:
+                        function_arguments = {}
+
+                    if user_approval == "y":
+                        result = await tool_collection.run(
+                            name=tool_name,
+                            tool_input=cast(dict[str, Any], function_arguments),
+                        )
+                    else:
+                        reason = (
+                            "Tool execution cancelled due to new user input"
+                            if user_input is not None
+                            else "Tool execution cancelled by user"
+                        )
+                        result = ToolResult(output=reason)
+
+                    output = result.error if result.error else result.output
+                    tool_output = output or ""
+                    if result.base64_image:
+                        tool_output += "\nThe user will reply with the tool's image output."
+                        user_content_to_add.append(
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": f"data:image/png;base64,{result.base64_image}"},
+                            }
+                        )
+                    if tool_output == "":
+                        tool_output = "No output from tool."
+
+                    self.messages.append(
+                        {
+                            "role": "tool",
+                            "content": tool_output.strip(),
+                            "tool_call_id": tc.get("id"),
+                        }
+                    )
+
+                if user_content_to_add:
+                    self.messages.append({"role": "user", "content": user_content_to_add})
+
+        # Now append the new user input (if any), after resolving outstanding tool calls
+        if user_input:
+            self.messages.append({"role": "user", "content": user_input})
 
         # Get provider and max_tokens, with fallbacks
         provider = self.provider  # Keep existing provider if set
@@ -356,7 +539,8 @@ class Interpreter:
 
             betas = [COMPUTER_USE_BETA_FLAG]
 
-            edit = ToolRenderer()
+            # Maintain separate renderers per tool_call id to support multiple simultaneous tool calls
+            active_edit_renderers: dict[str, ToolRenderer] = {}
 
             if (
                 provider == "anthropic" and not self.serve
@@ -473,6 +657,8 @@ class Interpreter:
 
                 # If there are no tool use blocks, we're done
                 if not tool_use_blocks:
+                    # End of assistant's turn; print user-request separator
+                    print(_terminal_rule("="))
                     break
 
                 user_approval = None
@@ -592,13 +778,13 @@ class Interpreter:
                             "type": "function",
                             "function": {
                                 "name": "bash",
-                                "description": """Run commands in a bash shell\n
-                                * When invoking this tool, the contents of the \"command\" parameter does NOT need to be XML-escaped.\n
-                                * You don't have access to the internet via this tool.\n
-                                * You do have access to a mirror of common linux and python packages via apt and pip.\n
-                                * State is persistent across command calls and discussions with the user.\n
-                                * To inspect a particular line range of a file, e.g. lines 10-25, try 'sed -n 10,25p /path/to/the/file'.\n
-                                * Please avoid commands that may produce a very large amount of output.\n
+                                "description": """Run commands in a bash shell
+                                * When invoking this tool, the contents of the \"command\" parameter does NOT need to be XML-escaped.
+                                * You don't have access to the internet via this tool.
+                                * You do have access to a mirror of common linux and python packages via apt and pip.
+                                * State is persistent across command calls and discussions with the user.
+                                * To inspect a particular line range of a file, e.g. lines 10-25, try 'sed -n 10,25p /path/to/the/file'.
+                                * Please avoid commands that may produce a very large amount of output.
                                 * Please run long lived commands in the background, e.g. 'sleep 10 &' or start a server in the background.""",
                                 "parameters": {
                                     "type": "object",
@@ -802,6 +988,10 @@ Notes for using the `str_replace` command:
                     messages = params["messages"]
                     temperature = params.get("temperature", 0)
                     tools_param = params.get("tools")
+                    # If we've seen multiple consecutive tool-only replies, force a textual reply
+                    tool_choice_arg = (
+                        "none" if (self.tool_calling and self._consecutive_tool_only_responses >= 3) else None
+                    )
 
                     # Prepare tool definitions for OpenAI (function calling)
                     tool_defs = None
@@ -822,21 +1012,27 @@ Notes for using the `str_replace` command:
                     if stream:
                         # Some models support only default temperature. Retry without it on 400.
                         try:
-                            response = client.chat.completions.create(
-                                model=model,
-                                messages=messages,
-                                temperature=temperature,
-                                tools=tool_defs,
-                                stream=True,
-                            )
+                            kwargs = {
+                                "model": model,
+                                "messages": messages,
+                                "temperature": temperature,
+                                "tools": tool_defs,
+                                "stream": True,
+                            }
+                            if tool_choice_arg is not None:
+                                kwargs["tool_choice"] = tool_choice_arg
+                            response = client.chat.completions.create(**kwargs)
                         except Exception as e:
                             if "Unsupported value" in str(e) and "temperature" in str(e):
-                                response = client.chat.completions.create(
-                                    model=model,
-                                    messages=messages,
-                                    tools=tool_defs,
-                                    stream=True,
-                                )
+                                kwargs = {
+                                    "model": model,
+                                    "messages": messages,
+                                    "tools": tool_defs,
+                                    "stream": True,
+                                }
+                                if tool_choice_arg is not None:
+                                    kwargs["tool_choice"] = tool_choice_arg
+                                response = client.chat.completions.create(**kwargs)
                             else:
                                 raise
                         # Adapt to litellm-like streaming interface for the main loop below
@@ -889,21 +1085,27 @@ Notes for using the `str_replace` command:
                         raw_response = _stream_map()
                     else:
                         try:
-                            response = client.chat.completions.create(
-                                model=model,
-                                messages=messages,
-                                temperature=temperature,
-                                tools=tool_defs,
-                                stream=False,
-                            )
+                            kwargs = {
+                                "model": model,
+                                "messages": messages,
+                                "temperature": temperature,
+                                "tools": tool_defs,
+                                "stream": False,
+                            }
+                            if tool_choice_arg is not None:
+                                kwargs["tool_choice"] = tool_choice_arg
+                            response = client.chat.completions.create(**kwargs)
                         except Exception as e:
                             if "Unsupported value" in str(e) and "temperature" in str(e):
-                                response = client.chat.completions.create(
-                                    model=model,
-                                    messages=messages,
-                                    tools=tool_defs,
-                                    stream=False,
-                                )
+                                kwargs = {
+                                    "model": model,
+                                    "messages": messages,
+                                    "tools": tool_defs,
+                                    "stream": False,
+                                }
+                                if tool_choice_arg is not None:
+                                    kwargs["tool_choice"] = tool_choice_arg
+                                response = client.chat.completions.create(**kwargs)
                             else:
                                 raise
                         # Normalize to iterable of one with .choices[0].delta
@@ -948,6 +1150,8 @@ Notes for using the `str_replace` command:
                             "content": raw_response[0].choices[0].delta.content,
                         }
                     )
+                    # Reset tool-only counter because we have textual content in this mode
+                    self._consecutive_tool_only_responses = 0
 
                     # Extract code blocks from non-tool-calling response
                     content = raw_response[0].choices[0].delta.content
@@ -955,45 +1159,43 @@ Notes for using the `str_replace` command:
                     message.tool_calls = []
                     message.content = ""
 
-                    # Find all code blocks between backticks
+                    # Find all code blocks between backticks (robust to missing closing fences)
                     while "```" in content:
-                        try:
-                            # Split on first ``` to get everything after it
-                            before, rest = content.split("```", 1)
-                            message.content += before
+                        start_idx = content.find("```")
+                        message.content += content[:start_idx]
+                        rest = content[start_idx + 3 :]
 
-                            # Handle optional language identifier
-                            if "\n" in rest:
-                                maybe_lang, rest = rest.split("\n", 1)
-                            else:
-                                maybe_lang = ""
+                        # Handle optional language identifier
+                        if "\n" in rest:
+                            _maybe_lang, remainder = rest.split("\n", 1)
+                        else:
+                            _maybe_lang, remainder = "", ""
 
-                            # Split on closing ``` to get code block
-                            code, content = rest.split("```", 1)
+                        end_idx = remainder.find("```")
+                        if end_idx == -1:
+                            code = remainder
+                            content = ""
+                        else:
+                            code = remainder[:end_idx]
+                            content = remainder[end_idx + 3 :]
 
-                            # Create tool call for the code block
-                            tool_call = type(
-                                "ToolCall",
-                                (),
-                                {
-                                    "id": f"call_{len(message.tool_calls)}",
-                                    "function": type(
-                                        "Function",
-                                        (),
-                                        {
-                                            "name": "bash",
-                                            "arguments": json.dumps(
-                                                {"command": code.strip()}
-                                            ),
-                                        },
-                                    ),
-                                },
-                            )
-                            message.tool_calls.append(tool_call)
-
-                        except ValueError:
-                            # Handle malformed code blocks by breaking
-                            break
+                        # Create tool call for the code block
+                        tool_call = type(
+                            "ToolCall",
+                            (),
+                            {
+                                "id": f"call_{len(message.tool_calls)}",
+                                "function": type(
+                                    "Function",
+                                    (),
+                                    {
+                                        "name": "bash",
+                                        "arguments": json.dumps({"command": code.strip()}),
+                                    },
+                                ),
+                            },
+                        )
+                        message.tool_calls.append(tool_call)
 
                     # Add any remaining content after the last code block
                     message.content += content
@@ -1001,6 +1203,7 @@ Notes for using the `str_replace` command:
 
                 message = None
                 first_token = True
+                streamed_tool_calls_seen = False
 
                 for chunk in raw_response:
                     yield chunk
@@ -1013,6 +1216,9 @@ Notes for using the `str_replace` command:
                         message = chunk.choices[0].delta
 
                     if chunk.choices[0].delta.content:
+                        # Prefix a separator for assistant text starts
+                        if message.content in (None, "") and chunk.choices[0].delta.content:
+                            print(_terminal_rule("-"))
                         md.feed(chunk.choices[0].delta.content)
                         await asyncio.sleep(0)
 
@@ -1022,45 +1228,53 @@ Notes for using the `str_replace` command:
                             message.content += chunk.choices[0].delta.content
 
                     if chunk.choices[0].delta.tool_calls:
-                        if chunk.choices[0].delta.tool_calls[0].id:
-                            if message.tool_calls is None or chunk.choices[
-                                0
-                            ].delta.tool_calls[0].id not in [
-                                t.id for t in message.tool_calls
-                            ]:
-                                edit.close()
-                                edit = ToolRenderer()
-                                if message.tool_calls is None:
-                                    message.tool_calls = []
-                                message.tool_calls.append(
-                                    chunk.choices[0].delta.tool_calls[0]
-                                )
-                            current_tool_call = [
-                                t
-                                for t in message.tool_calls
-                                if t.id == chunk.choices[0].delta.tool_calls[0].id
-                            ][0]
+                        streamed_tool_calls_seen = True
+                        for tc_delta in chunk.choices[0].delta.tool_calls:
+                            # Ensure message.tool_calls exists
+                            if message.tool_calls is None:
+                                message.tool_calls = []
 
-                        if chunk.choices[0].delta.tool_calls[0].function.name:
-                            tool_name = (
-                                chunk.choices[0].delta.tool_calls[0].function.name
-                            )
-                            if edit.name is None:
-                                edit.name = tool_name
-                            if current_tool_call.function.name is None:
-                                current_tool_call.function.name = tool_name
-                        if chunk.choices[0].delta.tool_calls[0].function.arguments:
-                            arguments_delta = (
-                                chunk.choices[0].delta.tool_calls[0].function.arguments
-                            )
-                            edit.feed(arguments_delta)
+                            # Register new tool call ids and create renderer
+                            tc_id = getattr(tc_delta, "id", None)
+                            if tc_id:
+                                if tc_id not in [t.id for t in message.tool_calls]:
+                                    message.tool_calls.append(tc_delta)
+                                if tc_id not in active_edit_renderers:
+                                    active_edit_renderers[tc_id] = ToolRenderer()
+                                renderer = active_edit_renderers[tc_id]
+                            else:
+                                # Fallback renderer for missing ids
+                                if "__fallback__" not in active_edit_renderers:
+                                    active_edit_renderers["__fallback__"] = ToolRenderer()
+                                renderer = active_edit_renderers["__fallback__"]
 
-                            if chunk.choices[0].delta != message:
-                                current_tool_call.function.arguments += arguments_delta
+                            # Locate current tool call by id (fallback to last)
+                            if tc_id:
+                                matches = [t for t in message.tool_calls if t.id == tc_id]
+                                current_tool_call = matches[0] if matches else message.tool_calls[-1]
+                            else:
+                                current_tool_call = message.tool_calls[-1]
+
+                            # Update function name
+                            if getattr(getattr(tc_delta, "function", None), "name", None):
+                                tool_name = tc_delta.function.name
+                                if renderer.name is None:
+                                    renderer.name = tool_name
+                                if getattr(current_tool_call, "function", None) and getattr(current_tool_call.function, "name", None) is None:
+                                    current_tool_call.function.name = tool_name
+
+                            # Update arguments stream
+                            if getattr(getattr(tc_delta, "function", None), "arguments", None):
+                                arguments_delta = tc_delta.function.arguments
+                                renderer.feed(arguments_delta)
+                                if chunk.choices[0].delta != message:
+                                    current_tool_call.function.arguments += arguments_delta
 
                     if chunk.choices[0].finish_reason:
-                        edit.close()
-                        edit = ToolRenderer()
+                        # Close all active renderers at the end of the assistant turn
+                        for _rid, _renderer in list(active_edit_renderers.items()):
+                            _renderer.close()
+                        active_edit_renderers.clear()
 
                 if self.tool_calling:
                     assistant_message = {
@@ -1082,28 +1296,67 @@ Notes for using the `str_replace` command:
                                 }
                             )
                         assistant_message["tool_calls"] = mapped_calls
+                        # Update tool-only response counter
+                        if (assistant_message.get("content") == "" or assistant_message.get("content") is None):
+                            self._consecutive_tool_only_responses += 1
+                        else:
+                            self._consecutive_tool_only_responses = 0
+                    else:
+                        # No tool calls; reset the counter
+                        self._consecutive_tool_only_responses = 0
+                        # If content is empty, provide a minimal fallback so UI isn't blank
+                        if not (assistant_message["content"] or "").strip():
+                            fallback_text = "Done."
+                            md.feed(fallback_text + "\n")
+                            await asyncio.sleep(0)
+                            assistant_message["content"] = fallback_text
                     self.messages.append(assistant_message)
 
                 print()
 
                 if not message.tool_calls:
+                    # End of assistant's turn; print user-request separator
+                    print(_terminal_rule("="))
                     break
 
+                # Respect CLI flag: auto-run when enabled; otherwise prompt only in interactive mode
                 if self.auto_run:
                     user_approval = "y"
                 else:
-                    user_approval = input("\nRun tool(s)? (y/n): ").lower().strip()
+                    user_approval = "n" if not self.interactive else self._ask_user_approval()
 
                 user_content_to_add = []
 
                 for tool_call in message.tool_calls:
                     function_arguments = json.loads(tool_call.function.arguments)
 
+                    # If no streamed tool_calls were seen, render a preview block before execution
+                    if not streamed_tool_calls_seen:
+                        try:
+                            preview_renderer = ToolRenderer()
+                            preview_renderer.name = getattr(tool_call.function, "name", None)
+                            if isinstance(function_arguments, dict):
+                                import json as _json
+                                preview_payload = {}
+                                if "command" in function_arguments:
+                                    preview_payload["command"] = function_arguments["command"]
+                                if "file_text" in function_arguments:
+                                    preview_payload["file_text"] = function_arguments["file_text"]
+                                if preview_payload:
+                                    preview_renderer.feed(_json.dumps(preview_payload))
+                            preview_renderer.close()
+                        except Exception:
+                            pass
+
                     if user_approval == "y":
-                        result = await tool_collection.run(
-                            name=tool_call.function.name,
-                            tool_input=cast(dict[str, Any], function_arguments),
-                        )
+                        try:
+                            self._spinner.start()
+                            result = await tool_collection.run(
+                                name=tool_call.function.name,
+                                tool_input=cast(dict[str, Any], function_arguments),
+                            )
+                        finally:
+                            self._spinner.stop()
                     else:
                         result = ToolResult(output="Tool execution cancelled by user")
 
@@ -1169,7 +1422,7 @@ Notes for using the `str_replace` command:
 
     def _ask_user_approval(self) -> str:
         """Ask user for approval to run a tool"""
-        # print("\n\033[38;5;240m(\033[0my\033[38;5;240m)es (\033[0mn\033[38;5;240m)o (\033[0ma\033[38;5;240m)lways approve this command: \033[0m", end="", flush=True)
+        # print("\n\033[38;5;240m(\033[0my\033[38;5;240m/\033[0mn\033[38;5;240m): \033[0m", end="", flush=True)
         # Simpler y/n prompt
         print(
             "\n\033[38;5;240m(\033[0my\033[38;5;240m/\033[0mn\033[38;5;240m): \033[0m",
@@ -1198,6 +1451,9 @@ Notes for using the `str_replace` command:
             asyncio.run(self.async_chat())
 
     async def async_chat(self):
+        if getattr(self, "_chat_running", False):
+            return
+        self._chat_running = True
         original_message_length = len(self.messages)
 
         try:
@@ -1209,7 +1465,9 @@ Notes for using the `str_replace` command:
                     print()
                     return self.messages[original_message_length:]
 
-                message_count += 1  # Increment counter after each message
+                # Ignore empty inputs silently
+                if user_input.strip() == "":
+                    continue
 
                 if user_input.startswith("/"):
                     parts = user_input.split(maxsplit=2)
@@ -1217,12 +1475,7 @@ Notes for using the `str_replace` command:
                     if self._handle_command(cmd, parts):
                         continue
 
-                if user_input == "":
-                    if message_count in range(8, 11):
-                        print("Error: Cat is asleep on Enter key\n")
-                    else:
-                        print("Error: No input provided\n")
-                    continue
+                message_count += 1  # Increment counter after each non-empty message
 
                 try:
                     print()
@@ -1250,6 +1503,8 @@ Notes for using the `str_replace` command:
                 ):
                     self._report_error("".join(traceback.format_exc()))
             exit(1)
+        finally:
+            self._chat_running = False
 
     def respond(self, user_input=None, stream=False):
         """Sync method to respond to user input if provided, or to the messages in self.messages."""
