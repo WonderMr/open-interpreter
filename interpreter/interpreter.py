@@ -91,61 +91,76 @@ except Exception:
     import shutil, json as _json, sys as _sys
 
     class ToolRenderer:  # type: ignore
+        ICONS = {
+            "bash": "▶",
+            "str_replace_editor": "✦",
+            "computer": "●",
+        }
+
         def __init__(self, name=None):
             self.name = name
             self._buffer = ""
-            self._printed_header = False
+            self._opened = False
+            self._line_no = 1
 
-        def _rule(self, char="─"):
+        def _width(self) -> int:
             try:
-                width = shutil.get_terminal_size().columns
+                w = shutil.get_terminal_size().columns
             except Exception:
-                width = 80
-            if width < 10:
-                width = 80
-            return char * width
+                w = 80
+            return max(w, 50)
 
-        def _print_header(self):
-            if self._printed_header or self.name is None:
+        def _print_sep(self, kind: str):
+            # kind in {"top","mid","bot"}
+            w = self._width()
+            left = "────"
+            mid_char = {"top": "┬", "mid": "┼", "bot": "┴"}[kind]
+            _sys.stdout.write(left + mid_char + "─" * (w - len(left) - 1) + "\n")
+
+        def _open_block(self):
+            if self._opened:
                 return
-            _sys.stdout.write("\n" + self._rule("─") + "\n")
-            title = f"{self.name or 'tool'}"
-            # Render a simple code block title
-            _sys.stdout.write(f"[ {title} ]\n")
-            self._printed_header = True
+            _sys.stdout.write("\n")
+            self._print_sep("top")
+            icon = self.ICONS.get(self.name or "", "•")
+            title = self.name or "tool"
+            # Header line: icon and tool name with left gutter
+            _sys.stdout.write(f"  {icon} │ {title} \n")
+            self._print_sep("mid")
+            self._opened = True
+
+        def _render_code(self, text: str):
+            # Numbered code lines with left gutter
+            for line in text.splitlines():
+                _sys.stdout.write(f"{str(self._line_no).rjust(3)} │ {line}\n")
+                self._line_no += 1
 
         def feed(self, chunk):
             try:
-                # Accumulate and try to parse full JSON payloads
                 self._buffer += chunk
-                data = None
                 try:
                     data = _json.loads(self._buffer)
                 except Exception:
-                    # Not a full JSON yet; keep buffering without printing
                     return
-
-                if isinstance(data, dict):
-                    # Print header once we know tool name
-                    self._print_header()
-                    # Print meaningful fields as a simple code block
-                    if "command" in data and isinstance(data["command"], str):
-                        _sys.stdout.write(data["command"].rstrip() + "\n")
-                    elif "file_text" in data and isinstance(data["file_text"], str):
-                        _sys.stdout.write(data["file_text"].rstrip() + "\n")
-                    else:
-                        # Graceful fallback if no known fields
-                        _sys.stdout.write(self._buffer.rstrip() + "\n")
-                    self._buffer = ""
+                if not isinstance(data, dict):
+                    return
+                self._open_block()
+                if isinstance(data.get("command"), str):
+                    self._render_code(data["command"].rstrip())
+                elif isinstance(data.get("file_text"), str):
+                    self._render_code(data["file_text"].rstrip())
+                else:
+                    # Fallback: print compact JSON
+                    self._render_code(self._buffer.rstrip())
+                self._buffer = ""
                 _sys.stdout.flush()
             except Exception:
-                # Ensure renderer never crashes the run
                 pass
 
         def close(self):
-            if self._printed_header:
-                # One empty line between code block and the assistant answer
-                _sys.stdout.write(self._rule("─") + "\n\n")
+            if self._opened:
+                self._print_sep("bot")
+                _sys.stdout.write("")
                 _sys.stdout.flush()
 
 COMPUTER_USE_BETA_FLAG = "computer-use-2024-10-22"
