@@ -84,7 +84,17 @@ from .misc.spinner import SimpleSpinner
 from .profiles import Profile
 from .tools import BashTool, ComputerTool, EditTool, ToolCollection, ToolResult
 from .ui.markdown import MarkdownRenderer
-from .ui.tool import ToolRenderer
+try:
+    from .ui.tool import ToolRenderer
+except Exception:
+    # Fallback to a no-op renderer if UI module is unavailable or outdated
+    class ToolRenderer:  # type: ignore
+        def __init__(self, name=None):
+            self.name = name
+        def feed(self, *_args, **_kwargs):
+            pass
+        def close(self):
+            pass
 
 COMPUTER_USE_BETA_FLAG = "computer-use-2024-10-22"
 PROMPT_CACHING_BETA_FLAG = "prompt-caching-2024-07-31"
