@@ -87,14 +87,69 @@ from .ui.markdown import MarkdownRenderer
 try:
     from .ui.tool import ToolRenderer
 except Exception:
-    # Fallback to a no-op renderer if UI module is unavailable or outdated
+    # Fallback renderer that prints minimal code blocks when UI module is unavailable
+    import shutil, json as _json, sys as _sys
+
     class ToolRenderer:  # type: ignore
         def __init__(self, name=None):
             self.name = name
-        def feed(self, *_args, **_kwargs):
-            pass
+            self._buffer = ""
+            self._printed_header = False
+
+        def _rule(self, char="─"):
+            try:
+                width = shutil.get_terminal_size().columns
+            except Exception:
+                width = 80
+            if width < 10:
+                width = 80
+            return char * width
+
+        def _print_header(self):
+            if self._printed_header:
+                return
+            _sys.stdout.write("\n" + self._rule("─") + "\n")
+            title = f"{self.name or 'tool'}"
+            _sys.stdout.write(f"[ {title} ]\n")
+            self._printed_header = True
+
+        def feed(self, chunk):
+            try:
+                self._print_header()
+                # Accumulate and try to parse full JSON payloads
+                self._buffer += chunk
+                data = None
+                try:
+                    data = _json.loads(self._buffer)
+                except Exception:
+                    # Not a full JSON yet; fall back to printing the delta
+                    pass
+
+                if isinstance(data, dict):
+                    # Print meaningful fields if present
+                    if "command" in data and isinstance(data["command"], str):
+                        _sys.stdout.write(data["command"] + "\n")
+                    if "file_text" in data and isinstance(data["file_text"], str):
+                        _sys.stdout.write(data["file_text"] + "\n")
+                    if "path" in data and isinstance(data["path"], str):
+                        _sys.stdout.write(f"Path: {data['path']}\n")
+                    if "old_str" in data and isinstance(data["old_str"], str):
+                        _sys.stdout.write(f"old_str: {data['old_str']}\n")
+                    if "new_str" in data and isinstance(data["new_str"], str):
+                        _sys.stdout.write(f"new_str: {data['new_str']}\n")
+                    self._buffer = ""
+                else:
+                    # Print incremental delta (may include partial JSON)
+                    _sys.stdout.write(chunk)
+                _sys.stdout.flush()
+            except Exception:
+                # Ensure renderer never crashes the run
+                pass
+
         def close(self):
-            pass
+            if self._printed_header:
+                _sys.stdout.write(self._rule("─") + "\n")
+                _sys.stdout.flush()
 
 COMPUTER_USE_BETA_FLAG = "computer-use-2024-10-22"
 PROMPT_CACHING_BETA_FLAG = "prompt-caching-2024-07-31"
