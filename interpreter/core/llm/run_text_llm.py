@@ -43,7 +43,19 @@ def run_text_llm(llm, params):
 
         # Did we just exit a code block?
         if inside_code_block and "```" in accumulated_block:
-            return
+            inside_code_block = False
+            # Extract the code part before the closing ```
+            code_part = accumulated_block.split("```")[0]
+            if code_part.strip() and language:
+                yield {
+                    "type": "code", 
+                    "format": language,
+                    "content": code_part
+                }
+            # Reset for next block
+            accumulated_block = accumulated_block.split("```", 1)[1] if "```" in accumulated_block else ""
+            language = None
+            continue
 
         # If we're in a code block,
         if inside_code_block:

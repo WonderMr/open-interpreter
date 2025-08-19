@@ -86,6 +86,16 @@ def respond(interpreter):
             try:
                 for chunk in interpreter.llm.run(messages_for_llm):
                     yield {"role": "assistant", **chunk}
+                    
+            except Exception as e:
+                # Выводим ошибку вместо молчаливого пропуска
+                if interpreter.verbose:
+                    print(f"DEBUG: Ошибка в LLM.run(): {e}")
+                    import traceback
+                    traceback.print_exc()
+                # Пробрасываем исключение дальше, если это не известная ошибка
+                if not any(keyword in str(e).lower() for keyword in ["auth", "api key", "budget", "quota", "access"]):
+                    raise
 
             except litellm.exceptions.BudgetExceededError:
                 interpreter.display_message(
