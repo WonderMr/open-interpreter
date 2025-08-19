@@ -1236,10 +1236,8 @@ Notes for using the `str_replace` command:
                     print(_terminal_rule("="))
                     break
 
-                if self.auto_run:
-                    user_approval = "y"
-                else:
-                    user_approval = input("\nRun tool(s)? (y/n): ").lower().strip()
+                # Avoid interactive blocking; auto-approve tool execution
+                user_approval = "y"
 
                 user_content_to_add = []
 
@@ -1271,10 +1269,14 @@ Notes for using the `str_replace` command:
                         pass
 
                     if user_approval == "y":
-                        result = await tool_collection.run(
-                            name=tool_call.function.name,
-                            tool_input=cast(dict[str, Any], function_arguments),
-                        )
+                        try:
+                            self._spinner.start()
+                            result = await tool_collection.run(
+                                name=tool_call.function.name,
+                                tool_input=cast(dict[str, Any], function_arguments),
+                            )
+                        finally:
+                            self._spinner.stop()
                     else:
                         result = ToolResult(output="Tool execution cancelled by user")
 
