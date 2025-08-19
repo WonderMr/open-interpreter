@@ -110,6 +110,7 @@ except Exception:
                 return
             _sys.stdout.write("\n" + self._rule("─") + "\n")
             title = f"{self.name or 'tool'}"
+            # Render a simple code block title
             _sys.stdout.write(f"[ {title} ]\n")
             self._printed_header = True
 
@@ -122,25 +123,19 @@ except Exception:
                 try:
                     data = _json.loads(self._buffer)
                 except Exception:
-                    # Not a full JSON yet; fall back to printing the delta
-                    pass
+                    # Not a full JSON yet; keep buffering without printing
+                    return
 
                 if isinstance(data, dict):
-                    # Print meaningful fields if present
+                    # Print meaningful fields as a simple code block
                     if "command" in data and isinstance(data["command"], str):
-                        _sys.stdout.write(data["command"] + "\n")
-                    if "file_text" in data and isinstance(data["file_text"], str):
-                        _sys.stdout.write(data["file_text"] + "\n")
-                    if "path" in data and isinstance(data["path"], str):
-                        _sys.stdout.write(f"Path: {data['path']}\n")
-                    if "old_str" in data and isinstance(data["old_str"], str):
-                        _sys.stdout.write(f"old_str: {data['old_str']}\n")
-                    if "new_str" in data and isinstance(data["new_str"], str):
-                        _sys.stdout.write(f"new_str: {data['new_str']}\n")
+                        _sys.stdout.write(data["command"].rstrip() + "\n")
+                    elif "file_text" in data and isinstance(data["file_text"], str):
+                        _sys.stdout.write(data["file_text"].rstrip() + "\n")
+                    else:
+                        # Graceful fallback if no known fields
+                        _sys.stdout.write(self._buffer.rstrip() + "\n")
                     self._buffer = ""
-                else:
-                    # Print incremental delta (may include partial JSON)
-                    _sys.stdout.write(chunk)
                 _sys.stdout.flush()
             except Exception:
                 # Ensure renderer never crashes the run
@@ -148,7 +143,8 @@ except Exception:
 
         def close(self):
             if self._printed_header:
-                _sys.stdout.write(self._rule("─") + "\n")
+                # One empty line between code block and the assistant answer
+                _sys.stdout.write(self._rule("─") + "\n\n")
                 _sys.stdout.flush()
 
 COMPUTER_USE_BETA_FLAG = "computer-use-2024-10-22"
