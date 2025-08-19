@@ -385,8 +385,6 @@ class Interpreter:
 
         # Now append the new user input (if any), after resolving outstanding tool calls
         if user_input:
-            # Print a visual separator for new user input
-            print(_terminal_rule("="))
             self.messages.append({"role": "user", "content": user_input})
 
         # Get provider and max_tokens, with fallbacks
