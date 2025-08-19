@@ -1077,45 +1077,43 @@ Notes for using the `str_replace` command:
                     message.tool_calls = []
                     message.content = ""
 
-                    # Find all code blocks between backticks
+                    # Find all code blocks between backticks (robust to missing closing fences)
                     while "```" in content:
-                        try:
-                            # Split on first ``` to get everything after it
-                            before, rest = content.split("```", 1)
-                            message.content += before
+                        start_idx = content.find("```")
+                        message.content += content[:start_idx]
+                        rest = content[start_idx + 3 :]
 
-                            # Handle optional language identifier
-                            if "\n" in rest:
-                                maybe_lang, rest = rest.split("\n", 1)
-                            else:
-                                maybe_lang = ""
+                        # Handle optional language identifier
+                        if "\n" in rest:
+                            _maybe_lang, remainder = rest.split("\n", 1)
+                        else:
+                            _maybe_lang, remainder = "", ""
 
-                            # Split on closing ``` to get code block
-                            code, content = rest.split("```", 1)
+                        end_idx = remainder.find("```")
+                        if end_idx == -1:
+                            code = remainder
+                            content = ""
+                        else:
+                            code = remainder[:end_idx]
+                            content = remainder[end_idx + 3 :]
 
-                            # Create tool call for the code block
-                            tool_call = type(
-                                "ToolCall",
-                                (),
-                                {
-                                    "id": f"call_{len(message.tool_calls)}",
-                                    "function": type(
-                                        "Function",
-                                        (),
-                                        {
-                                            "name": "bash",
-                                            "arguments": json.dumps(
-                                                {"command": code.strip()}
-                                            ),
-                                        },
-                                    ),
-                                },
-                            )
-                            message.tool_calls.append(tool_call)
-
-                        except ValueError:
-                            # Handle malformed code blocks by breaking
-                            break
+                        # Create tool call for the code block
+                        tool_call = type(
+                            "ToolCall",
+                            (),
+                            {
+                                "id": f"call_{len(message.tool_calls)}",
+                                "function": type(
+                                    "Function",
+                                    (),
+                                    {
+                                        "name": "bash",
+                                        "arguments": json.dumps({"command": code.strip()}),
+                                    },
+                                ),
+                            },
+                        )
+                        message.tool_calls.append(tool_call)
 
                     # Add any remaining content after the last code block
                     message.content += content
@@ -1147,41 +1145,39 @@ Notes for using the `str_replace` command:
                             message.content += chunk.choices[0].delta.content
 
                     if chunk.choices[0].delta.tool_calls:
-                        if chunk.choices[0].delta.tool_calls[0].id:
-                            if message.tool_calls is None or chunk.choices[
-                                0
-                            ].delta.tool_calls[0].id not in [
-                                t.id for t in message.tool_calls
-                            ]:
-                                edit.close()
-                                edit = ToolRenderer()
-                                if message.tool_calls is None:
-                                    message.tool_calls = []
-                                message.tool_calls.append(
-                                    chunk.choices[0].delta.tool_calls[0]
-                                )
-                            current_tool_call = [
-                                t
-                                for t in message.tool_calls
-                                if t.id == chunk.choices[0].delta.tool_calls[0].id
-                            ][0]
+                        for tc_delta in chunk.choices[0].delta.tool_calls:
+                            # Ensure message.tool_calls exists
+                            if message.tool_calls is None:
+                                message.tool_calls = []
 
-                        if chunk.choices[0].delta.tool_calls[0].function.name:
-                            tool_name = (
-                                chunk.choices[0].delta.tool_calls[0].function.name
-                            )
-                            if edit.name is None:
-                                edit.name = tool_name
-                            if current_tool_call.function.name is None:
-                                current_tool_call.function.name = tool_name
-                        if chunk.choices[0].delta.tool_calls[0].function.arguments:
-                            arguments_delta = (
-                                chunk.choices[0].delta.tool_calls[0].function.arguments
-                            )
-                            edit.feed(arguments_delta)
+                            # Register new tool call ids
+                            if getattr(tc_delta, "id", None):
+                                if tc_delta.id not in [t.id for t in message.tool_calls]:
+                                    edit.close()
+                                    edit = ToolRenderer()
+                                    message.tool_calls.append(tc_delta)
 
-                            if chunk.choices[0].delta != message:
-                                current_tool_call.function.arguments += arguments_delta
+                            # Locate current tool call by id (fallback to last)
+                            if getattr(tc_delta, "id", None):
+                                matches = [t for t in message.tool_calls if t.id == tc_delta.id]
+                                current_tool_call = matches[0] if matches else message.tool_calls[-1]
+                            else:
+                                current_tool_call = message.tool_calls[-1]
+
+                            # Update function name
+                            if getattr(getattr(tc_delta, "function", None), "name", None):
+                                tool_name = tc_delta.function.name
+                                if edit.name is None:
+                                    edit.name = tool_name
+                                if getattr(current_tool_call, "function", None) and getattr(current_tool_call.function, "name", None) is None:
+                                    current_tool_call.function.name = tool_name
+
+                            # Update arguments stream
+                            if getattr(getattr(tc_delta, "function", None), "arguments", None):
+                                arguments_delta = tc_delta.function.arguments
+                                edit.feed(arguments_delta)
+                                if chunk.choices[0].delta != message:
+                                    current_tool_call.function.arguments += arguments_delta
 
                     if chunk.choices[0].finish_reason:
                         edit.close()
