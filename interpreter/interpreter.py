@@ -92,6 +92,17 @@ PROMPT_CACHING_BETA_FLAG = "prompt-caching-2024-07-31"
 # Initialize markdown renderer
 md = MarkdownRenderer()
 
+# Terminal separator helper
+def _terminal_rule(char: str) -> str:
+    try:
+        import shutil
+        width = shutil.get_terminal_size(fallback=(80, 24)).columns
+    except Exception:
+        width = 80
+    if width <= 0:
+        width = 80
+    return char * width
+
 
 # Helper function used in async_respond()
 def _make_api_tool_result(
@@ -374,6 +385,8 @@ class Interpreter:
 
         # Now append the new user input (if any), after resolving outstanding tool calls
         if user_input:
+            # Print a visual separator for new user input
+            print(_terminal_rule("="))
             self.messages.append({"role": "user", "content": user_input})
 
         # Get provider and max_tokens, with fallbacks
@@ -683,13 +696,13 @@ class Interpreter:
                             "type": "function",
                             "function": {
                                 "name": "bash",
-                                "description": """Run commands in a bash shell\n
-                                * When invoking this tool, the contents of the \"command\" parameter does NOT need to be XML-escaped.\n
-                                * You don't have access to the internet via this tool.\n
-                                * You do have access to a mirror of common linux and python packages via apt and pip.\n
-                                * State is persistent across command calls and discussions with the user.\n
-                                * To inspect a particular line range of a file, e.g. lines 10-25, try 'sed -n 10,25p /path/to/the/file'.\n
-                                * Please avoid commands that may produce a very large amount of output.\n
+                                "description": """Run commands in a bash shell
+                                * When invoking this tool, the contents of the \"command\" parameter does NOT need to be XML-escaped.
+                                * You don't have access to the internet via this tool.
+                                * You do have access to a mirror of common linux and python packages via apt and pip.
+                                * State is persistent across command calls and discussions with the user.
+                                * To inspect a particular line range of a file, e.g. lines 10-25, try 'sed -n 10,25p /path/to/the/file'.
+                                * Please avoid commands that may produce a very large amount of output.
                                 * Please run long lived commands in the background, e.g. 'sleep 10 &' or start a server in the background.""",
                                 "parameters": {
                                     "type": "object",
@@ -1122,6 +1135,9 @@ Notes for using the `str_replace` command:
                         message = chunk.choices[0].delta
 
                     if chunk.choices[0].delta.content:
+                        # Prefix a separator for assistant text starts
+                        if message.content in (None, "") and chunk.choices[0].delta.content:
+                            print(_terminal_rule("-"))
                         md.feed(chunk.choices[0].delta.content)
                         await asyncio.sleep(0)
 
@@ -1292,7 +1308,7 @@ Notes for using the `str_replace` command:
 
     def _ask_user_approval(self) -> str:
         """Ask user for approval to run a tool"""
-        # print("\n\033[38;5;240m(\033[0my\033[38;5;240m)es (\033[0mn\033[38;5;240m)o (\033[0ma\033[38;5;240m)lways approve this command: \033[0m", end="", flush=True)
+        # print("\n\033[38;5;240m(\033[0my\033[38;5;240m/\033[0mn\033[38;5;240m): \033[0m", end="", flush=True)
         # Simpler y/n prompt
         print(
             "\n\033[38;5;240m(\033[0my\033[38;5;240m/\033[0mn\033[38;5;240m): \033[0m",
