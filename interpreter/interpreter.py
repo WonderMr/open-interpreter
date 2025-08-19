@@ -205,6 +205,7 @@ class Interpreter:
         self._stop_flag = False  # Add stop flag
         # Track consecutive assistant turns that contain only tool calls and no content
         self._consecutive_tool_only_responses = 0
+        self._chat_running = False
 
     def to_dict(self):
         """Convert current settings to dictionary"""
@@ -1387,6 +1388,9 @@ Notes for using the `str_replace` command:
             asyncio.run(self.async_chat())
 
     async def async_chat(self):
+        if getattr(self, "_chat_running", False):
+            return
+        self._chat_running = True
         original_message_length = len(self.messages)
 
         try:
@@ -1436,6 +1440,8 @@ Notes for using the `str_replace` command:
                 ):
                     self._report_error("".join(traceback.format_exc()))
             exit(1)
+        finally:
+            self._chat_running = False
 
     def respond(self, user_input=None, stream=False):
         """Sync method to respond to user input if provided, or to the messages in self.messages."""
